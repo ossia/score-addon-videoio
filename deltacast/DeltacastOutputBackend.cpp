@@ -62,17 +62,17 @@ bool DeltacastOutputBackend::open(score::gfx::GraphicsApi)
   VHD_GetVideoCharacteristics(vstd, &w, &h, &interlaced, &fr);
   m_width = static_cast<int>(w);
   m_height = static_cast<int>(h);
+  // VHD reports the integer rate; the genlock divisor makes the true cadence
+  // fr/1.001 — report that so the node's manual rendering rate matches the
+  // wire instead of running ~0.1% fast (one shed frame every ~16 s at 59.94).
   m_frameRate = fr ? static_cast<double>(fr) : 60.0;
+  if(m_settings.fractionalClock)
+    m_frameRate /= 1.001;
   m_rowBytes = static_cast<int>(vhdBytesPerLine(pack, m_width));
   m_frameByteSize
       = static_cast<uint32_t>(m_rowBytes) * static_cast<uint32_t>(m_height);
 
-  VHD_SetStreamProperty(m_stream, VHD_SDI_SP_VIDEO_STANDARD, m_settings.videoStandard);
-  VHD_SetStreamProperty(m_stream, VHD_CORE_SP_BUFFERQUEUE_DEPTH, 4);
-  VHD_SetStreamProperty(m_stream, VHD_CORE_SP_BUFFERQUEUE_PRELOAD, 2);
-  VHD_SetStreamProperty(
-      m_stream, VHD_SDI_SP_INTERFACE, vhdInterfaceFromStandard(vstd));
-  VHD_SetStreamProperty(m_stream, VHD_CORE_SP_BUFFER_PACKING, m_settings.bufferPacking);
+  applyStreamProperties();
 
   // RDMA "application buffers" must be registered (VHD_CreateSlotEx) BEFORE
   // VHD_StartStream, but the slot GPU buffers only exist after the strategy's
@@ -93,6 +93,63 @@ bool DeltacastOutputBackend::open(score::gfx::GraphicsApi)
   }
   m_open = true;
   return true;
+}
+
+bool DeltacastOutputBackend::applyStreamProperties()
+{
+  if(!m_stream)
+    return false;
+  const auto vstd = static_cast<VHD_VIDEOSTANDARD>(m_settings.videoStandard);
+  VHD_SetStreamProperty(m_stream, VHD_SDI_SP_VIDEO_STANDARD, m_settings.videoStandard);
+  VHD_SetStreamProperty(m_stream, VHD_CORE_SP_BUFFERQUEUE_DEPTH, 4);
+  VHD_SetStreamProperty(m_stream, VHD_CORE_SP_BUFFERQUEUE_PRELOAD, 2);
+  VHD_SetStreamProperty(
+      m_stream, VHD_SDI_SP_INTERFACE, vhdInterfaceFromStandard(vstd));
+  VHD_SetStreamProperty(m_stream, VHD_CORE_SP_BUFFER_PACKING, m_settings.bufferPacking);
+  return true;
+}
+
+bool DeltacastOutputBackend::resetStreamForFallback()
+{
+  if(!m_board)
+    return false;
+  if(m_stream)
+  {
+    VHD_CloseStreamHandle(m_stream);
+    m_stream = nullptr;
+  }
+  if(VHD_OpenStreamHandle(
+         m_board, VHD_ST_TX0, VHD_SDI_STPROC_DISJOINED_VIDEO, nullptr, &m_stream,
+         nullptr)
+         != VHDERR_NOERROR
+     || !m_stream)
+  {
+    qWarning() << "Deltacast: could not reopen the TX stream after a failed "
+                  "RDMA registration - playout disabled";
+    m_stream = nullptr;
+    return false;
+  }
+  return applyStreamProperties();
+}
+
+void DeltacastOutputBackend::quiesce()
+{
+  // Stop the board from reading any registered buffer while the strategy /
+  // ring memory is still alive: VHD_StopStream releases the DMA pin on RDMA
+  // application-buffer slots (destroying them), so DeltacastRdmaOutput can
+  // then free its VMM VRAM safely. Runs before close(); close() skips the
+  // second StopStream via m_started.
+  if(m_stream && m_started)
+  {
+    VHD_StopStream(m_stream);
+    m_started = false;
+  }
+  m_rdmaSlots.clear();
+  m_rdmaMode = false;
+  {
+    std::lock_guard lock{m_busyMutex};
+    m_busySlots.clear();
+  }
 }
 
 void DeltacastOutputBackend::close()
@@ -175,7 +232,7 @@ DeltacastOutputBackend::gpuDirectCandidates(QRhi* rhi, score::gfx::GraphicsApi)
 }
 
 bool DeltacastOutputBackend::registerRdmaOutputSlots(
-    void* const* gpuVAs, std::size_t n)
+    void* const* gpuVAs, std::size_t n, std::size_t slotCapacity)
 {
   if(!m_stream || !gpuVAs || n == 0)
     return false;
@@ -183,8 +240,30 @@ bool DeltacastOutputBackend::registerRdmaOutputSlots(
   if(VHD_InitApplicationBuffers(m_stream) != VHDERR_NOERROR)
   {
     qWarning() << "Deltacast: VHD_InitApplicationBuffers (TX) failed";
+    resetStreamForFallback();
     return false;
   }
+
+  // The SDK owns the required buffer size ("The size of the buffer is given
+  // by VHD_GetApplicationBuffersSize"); if it exceeds the GPU allocation the
+  // card would DMA past the end of the slot.
+  ULONG required = 0;
+  if(VHD_GetApplicationBuffersSize(m_stream, VHD_SDI_BT_VIDEO, &required)
+         == VHDERR_NOERROR
+     && required > slotCapacity)
+  {
+    qWarning() << "Deltacast: application buffer size" << required
+               << "exceeds the RDMA slot allocation" << qulonglong(slotCapacity)
+               << "- falling back to host-staged playout";
+    resetStreamForFallback();
+    return false;
+  }
+
+  auto destroyPartial = [this] {
+    for(auto& [va, slot] : m_rdmaSlots)
+      VHD_DestroySlot(slot);
+    m_rdmaSlots.clear();
+  };
 
   m_rdmaSlots.clear();
   m_rdmaSlots.reserve(n);
@@ -200,7 +279,8 @@ bool DeltacastOutputBackend::registerRdmaOutputSlots(
     {
       qWarning() << "Deltacast: VHD_CreateSlotEx(RDMA TX) failed at slot"
                  << int(i);
-      m_rdmaSlots.clear();
+      destroyPartial();
+      resetStreamForFallback();
       return false;
     }
     m_rdmaSlots.emplace_back(gpuVAs[i], slot);
@@ -209,12 +289,20 @@ bool DeltacastOutputBackend::registerRdmaOutputSlots(
   if(VHD_StartStream(m_stream) != VHDERR_NOERROR)
   {
     qWarning() << "Deltacast: VHD_StartStream (RDMA TX) failed";
-    m_rdmaSlots.clear();
+    destroyPartial();
+    resetStreamForFallback();
     return false;
   }
   m_started = true;
   m_rdmaMode = true;
   return true;
+}
+
+bool DeltacastOutputBackend::rdmaSlotBusy(void* gpuVA)
+{
+  std::lock_guard lock{m_busyMutex};
+  return std::find(m_busySlots.begin(), m_busySlots.end(), gpuVA)
+         != m_busySlots.end();
 }
 
 score::gfx::interop::PacedFramePump::Hooks DeltacastOutputBackend::pacingHooks()
@@ -247,11 +335,41 @@ bool DeltacastOutputBackend::submitFrame(void* framePtr)
     }
     if(!slot)
       return false;
+
+    // Mark the slot in flight before the board can touch it; the render
+    // thread's prepareNextFrame() skips busy slots so the CUDA copy never
+    // overwrites VRAM that is queued or being sent.
+    {
+      std::lock_guard lock{m_busyMutex};
+      if(std::find(m_busySlots.begin(), m_busySlots.end(), framePtr)
+         == m_busySlots.end())
+        m_busySlots.push_back(framePtr);
+    }
     if(VHD_QueueOutSlot(slot) != VHDERR_NOERROR)
+    {
+      std::lock_guard lock{m_busyMutex};
+      std::erase(m_busySlots, framePtr);
       return false;
+    }
     HANDLE sent = nullptr;
-    VHD_WaitSlotSent(m_stream, &sent, 1000); // blocks -> paces to genlock
-    return true;
+    if(VHD_WaitSlotSent(m_stream, &sent, 1000) == VHDERR_NOERROR && sent)
+    {
+      // The sent slot is not necessarily the one just queued (FIFO order);
+      // resolve it back to its gpuVA before clearing the busy mark.
+      for(const auto& [va, h] : m_rdmaSlots)
+      {
+        if(h == sent)
+        {
+          std::lock_guard lock{m_busyMutex};
+          std::erase(m_busySlots, va);
+          break;
+        }
+      }
+      return true;
+    }
+    // Timeout/error: the queued slot stays marked busy until a later
+    // WaitSlotSent drains it; report the failed transfer.
+    return false;
   }
 
   // Host-staged path. If RDMA was requested but never engaged (no Vulkan /

@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -40,6 +41,7 @@ public:
   ~DeltacastOutputBackend() override;
 
   bool open(score::gfx::GraphicsApi api) override;
+  void quiesce() override;
   void close() override;
 
   int width() const noexcept override { return m_width; }
@@ -60,12 +62,27 @@ public:
   /// Called by DeltacastRdmaOutput::init() once its RDMA GPU VRAM slots exist:
   /// registers each gpuVA as a Deltacast "application buffer" (VHD_CreateSlotEx
   /// RDMAEnabled=TRUE) and starts the stream (the StartStream deferred from
-  /// open() in RDMA mode). Returns false on any failure, so the strategy fails
-  /// init() and the node falls back to the host-staged path.
-  bool registerRdmaOutputSlots(void* const* gpuVAs, std::size_t n);
+  /// open() in RDMA mode). `slotCapacity` is the usable byte size of each GPU
+  /// allocation — validated against VHD_GetApplicationBuffersSize so the card
+  /// can never DMA past the end of a slot. Returns false on any failure (after
+  /// destroying partial registrations and resetting the stream handle), so the
+  /// strategy fails init() and the node falls back to the host-staged path.
+  bool registerRdmaOutputSlots(
+      void* const* gpuVAs, std::size_t n, std::size_t slotCapacity);
+
+  /// True while `gpuVA` is queued to (or being sent by) the board.
+  /// DeltacastRdmaOutput::prepareNextFrame() skips busy slots so the CUDA copy
+  /// never overwrites VRAM the card is still DMA-reading.
+  bool rdmaSlotBusy(void* gpuVA);
 
 private:
   bool submitFrame(void* framePtr);
+  bool applyStreamProperties();
+  /// After a failed RDMA registration: the stream is stuck in application-
+  /// buffers mode (VHD_InitApplicationBuffers cannot be undone), which the
+  /// host-staged slot model cannot use. Close and reopen the stream handle
+  /// with the original properties so the lazy StartStream fallback works.
+  bool resetStreamForFallback();
 
   DeltacastOutputSettings m_settings;
 
@@ -76,6 +93,12 @@ private:
   // pointer prepareNextFrame() returned back to the slot to VHD_QueueOutSlot().
   std::vector<std::pair<void*, HANDLE>> m_rdmaSlots;
   bool m_rdmaMode{false};
+
+  // Slots currently queued/being sent (pump thread inserts on QueueOutSlot,
+  // erases when VHD_WaitSlotSent reports them sent; render thread reads via
+  // rdmaSlotBusy).
+  std::mutex m_busyMutex;
+  std::vector<void*> m_busySlots;
 
   int m_width{};
   int m_height{};

@@ -64,6 +64,7 @@
 
 #include <QDebug>
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 
@@ -243,12 +244,18 @@ struct DeltacastRdmaOutput final : score::gfx::interop::GpuDirectStrategy
 
     // 4. Hand the slot GPU VAs to the backend, which registers them as Deltacast
     //    "application buffers" (RDMAEnabled=TRUE) and starts the stream (the
-    //    StartStream deferred from open()). On failure the node falls back to
-    //    the host-staged path.
+    //    StartStream deferred from open()). Pass the smallest actual slot
+    //    allocation so the backend can validate it against
+    //    VHD_GetApplicationBuffersSize. On failure the node falls back to the
+    //    host-staged path.
     void* gpuVAs[kSlotCount]{};
+    std::size_t slotCapacity = SIZE_MAX;
     for(std::size_t i = 0; i < kSlotCount; ++i)
+    {
       gpuVAs[i] = m_rdma.slot(i).gpuVA;
-    if(!m_backend->registerRdmaOutputSlots(gpuVAs, kSlotCount))
+      slotCapacity = std::min(slotCapacity, m_rdma.slot(i).size);
+    }
+    if(!m_backend->registerRdmaOutputSlots(gpuVAs, kSlotCount, slotCapacity))
       return releaseFail("registerRdmaOutputSlots");
 
     // 5. Vulkan->CUDA ordering fence (non-fatal). If the binary-semaphore path
@@ -300,13 +307,26 @@ struct DeltacastRdmaOutput final : score::gfx::interop::GpuDirectStrategy
     else
       cfg.rhi->finish();
 
-    const std::size_t idx = m_idx;
+    // Skip slots the board is still reading (queued / being sent): with the
+    // pump ring + the in-submit frame, up to ringDepth+1 slots can be in
+    // flight, and a producer burst must not overwrite one of them mid-DMA
+    // (the vendor sample waits WaitSlotSent before rewriting a slot).
+    std::size_t idx = m_idx;
+    std::size_t tries = 0;
+    while(tries < kSlotCount && m_backend->rdmaSlotBusy(m_rdma.slot(idx).gpuVA))
+    {
+      idx = (idx + 1) % kSlotCount;
+      ++tries;
+    }
+    if(tries == kSlotCount)
+      return nullptr; // every slot in flight — drop this frame
+
     if(cuda_p2p_copy_array_to_buffer(
            m_cudaCtx, m_exportArray, m_rdma.slot(idx).gpuVA, m_rowBytes, m_texH,
            m_rowBytes)
        != CUDA_P2P_SUCCESS)
       return nullptr;
-    m_idx = (m_idx + 1) % kSlotCount;
+    m_idx = (idx + 1) % kSlotCount;
     return m_rdma.slot(idx).gpuVA;
   }
 
@@ -322,8 +342,10 @@ struct DeltacastRdmaOutput final : score::gfx::interop::GpuDirectStrategy
     m_fenceOk = false;
     m_fenceValue = 0;
 
-    // Destroy the RDMA VMM slots while the CUDA primary context is still alive.
-    // (The VHD slots themselves are torn down by the backend's VHD_StopStream.)
+    // Destroy the RDMA VMM slots while the CUDA primary context is still
+    // alive. The VHD slots (and the driver's DMA pin on this VRAM) were
+    // already torn down by the backend's quiesce() -> VHD_StopStream, which
+    // the node runs before releasing this strategy.
     m_rdma.destroy();
     if(m_exportHandle && m_cudaCtx)
       cuda_p2p_release_image(m_cudaCtx, m_exportHandle);

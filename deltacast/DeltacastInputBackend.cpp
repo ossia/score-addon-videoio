@@ -168,12 +168,32 @@ void DeltacastInputBackend::start()
   if(rdmaActive())
   {
     // Register the strategy's RDMA GPU buffers as Deltacast "application
-    // buffers" (RDMAEnabled=TRUE), then StartStream — the deferred-from-open()
-    // sequence. The card will DMA each received frame straight into slot GPU
-    // VRAM. See Sample_RX_ApplicationBuffers_RDMA.
+    // buffers" (RDMAEnabled=TRUE), prime the FIFO, then StartStream — the
+    // deferred-from-open() sequence. The card will DMA each received frame
+    // straight into slot GPU VRAM. See Sample_RX_ApplicationBuffers_RDMA.
+    auto destroyPartial = [this] {
+      for(auto& slot : m_vhdSlots)
+      {
+        if(slot)
+          VHD_DestroySlot(slot);
+        slot = nullptr;
+      }
+    };
     if(VHD_InitApplicationBuffers(m_stream) != VHDERR_NOERROR)
     {
       qWarning() << "Deltacast input: VHD_InitApplicationBuffers failed";
+      return;
+    }
+    // The SDK dictates the required buffer size; the strategy allocated
+    // m_frameByteSize per slot, so a larger requirement would let the card
+    // DMA past the end of the GPU allocation.
+    ULONG required = 0;
+    if(VHD_GetApplicationBuffersSize(m_stream, VHD_SDI_BT_VIDEO, &required)
+           == VHDERR_NOERROR
+       && required > m_frameByteSize)
+    {
+      qWarning() << "Deltacast input: application buffer size" << required
+                 << "exceeds the RDMA slot allocation" << m_frameByteSize;
       return;
     }
     for(std::size_t i = 0; i < kRdmaSlotCount; ++i)
@@ -190,12 +210,19 @@ void DeltacastInputBackend::start()
       {
         qWarning() << "Deltacast input: VHD_CreateSlotEx(RDMA) failed at slot"
                    << int(i);
+        destroyPartial();
         return;
       }
     }
+    // Prime the FIFO BEFORE StartStream (vendor sample order): the card must
+    // have DMA targets from the very first frame or the capture starts with
+    // guaranteed drops / WaitSlotFilled errors.
+    for(std::size_t i = 0; i < kRdmaSlotCount; ++i)
+      VHD_QueueInSlot(m_vhdSlots[i]);
     if(VHD_StartStream(m_stream) != VHDERR_NOERROR)
     {
       qWarning() << "Deltacast input: VHD_StartStream (RDMA) failed";
+      destroyPartial();
       return;
     }
     m_streamStarted = true;
@@ -292,9 +319,7 @@ void DeltacastInputBackend::runLoopRdma()
   if(!strat)
     return;
 
-  // Prime the FIFO: queue every slot so the card has buffers to DMA into.
-  for(std::size_t i = 0; i < kRdmaSlotCount; ++i)
-    VHD_QueueInSlot(m_vhdSlots[i]);
+  // The FIFO was primed (every slot queued) before StartStream in start().
 
   while(m_running.load(std::memory_order_acquire))
   {

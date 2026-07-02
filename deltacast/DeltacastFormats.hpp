@@ -49,6 +49,8 @@ inline VHD_INTERFACE vhdInterfaceFromStandard(VHD_VIDEOSTANDARD s) noexcept
       return VHD_INTERFACE_3G_A_425_1;
     case VHD_VIDEOSTD_3840x2160p_25Hz:
     case VHD_VIDEOSTD_3840x2160p_30Hz:
+      // Single-link 2160p <= 30 is 6G (SMPTE ST 2081-10); 12G starts at 50p.
+      return VHD_INTERFACE_6G_2081_10;
     case VHD_VIDEOSTD_3840x2160p_50Hz:
     case VHD_VIDEOSTD_3840x2160p_60Hz:
       return VHD_INTERFACE_12G_2082_10;
