@@ -129,6 +129,34 @@ void MagewellInputBackend::start()
   if(!strat)
     return;
 
+  // Undo the partial bring-up on any failure so a later start() retry does
+  // not overwrite live event handles or double-pin the slot buffers.
+  auto failStart = [this] {
+    if(m_captureStarted)
+    {
+      MWStopVideoCapture(m_channel);
+      m_captureStarted = false;
+    }
+    for(auto& buf : m_pinnedBuffers)
+    {
+      if(buf)
+      {
+        MWUnpinVideoBuffer(m_channel, buf);
+        buf = nullptr;
+      }
+    }
+    if(m_notifyEvent)
+    {
+      CloseHandle(m_notifyEvent);
+      m_notifyEvent = nullptr;
+    }
+    if(m_captureEvent)
+    {
+      CloseHandle(m_captureEvent);
+      m_captureEvent = nullptr;
+    }
+  };
+
   // Two auto-reset events: one signalled per buffered frame (notify), one
   // signalled when a MWCaptureVideoFrameToVirtualAddress transfer completes.
   m_notifyEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
@@ -136,6 +164,7 @@ void MagewellInputBackend::start()
   if(!m_notifyEvent || !m_captureEvent)
   {
     qWarning() << "Magewell input: CreateEvent failed";
+    failStart();
     return;
   }
 
@@ -151,6 +180,7 @@ void MagewellInputBackend::start()
   if(MWStartVideoCapture(m_channel, m_captureEvent) != MW_SUCCEEDED)
   {
     qWarning() << "Magewell input: MWStartVideoCapture failed";
+    failStart();
     return;
   }
   m_captureStarted = true;
@@ -160,6 +190,7 @@ void MagewellInputBackend::start()
   if(m_notify == 0)
   {
     qWarning() << "Magewell input: MWRegisterNotify failed";
+    failStart();
     return;
   }
 

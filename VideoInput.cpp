@@ -11,6 +11,7 @@
 
 #include <ossia/network/generic/generic_device.hpp>
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDebug>
 #include <QFormLayout>
@@ -104,6 +105,7 @@ Gfx::Deltacast::DeltacastInputSettings toDeltacastInput(const VideoInputSettings
   // the widget's "expected format" is only a UI hint for capture.
   d.videoStandard = 0;
   d.bufferPacking = Gfx::Deltacast::vhdPackingFromToken(s.pixelFormat);
+  d.useRDMA = s.useRDMA; // user-visible switch to force the host-staged path
   return d;
 }
 #endif
@@ -412,6 +414,10 @@ VideoInputSettingsWidget::VideoInputSettingsWidget(QWidget* parent)
   m_routingModeCombo->addItem(tr("TSI — Two-Sample Interleave"), 1);
   m_layout->addRow(tr("Quad routing"), m_routingModeCombo);
 
+  m_rdmaCheckbox = new QCheckBox{tr("GPU-direct (RDMA / DVP) when available"), this};
+  m_rdmaCheckbox->setChecked(true);
+  m_layout->addRow(m_rdmaCheckbox);
+
   connect(
       m_vendorCombo, qOverload<int>(&QComboBox::currentIndexChanged), this,
       [this](int) { onVendorChanged(); });
@@ -438,6 +444,12 @@ void VideoInputSettingsWidget::onVendorChanged()
   };
   setRow(m_resolutionModeCombo, isAja);
   setRow(m_routingModeCombo, isAja);
+  // Only AJA plumbs channelIndex through to its backend; on the other vendors
+  // the selector would silently do nothing (their input settings carry no
+  // channel), so hide it like the output widget does.
+  setRow(m_channelCombo, isAja);
+  // GPU-direct capture exists for AJA (RDMA/DVP) and Deltacast (RDMA).
+  m_rdmaCheckbox->setVisible(isAja || currentVendor() == Vendor::Deltacast);
 
   const bool isMagewell = currentVendor() == Vendor::Magewell;
 
@@ -462,7 +474,10 @@ void VideoInputSettingsWidget::onVendorChanged()
     m_pixelFormatCombo->addItem("YCbCr 8-bit", "YCbCr8");
     m_pixelFormatCombo->addItem("YCbCr 10-bit", "YCbCr10");
     m_pixelFormatCombo->addItem("BGRA 8-bit", "RGB8");
-    m_pixelFormatCombo->addItem("RGB 10-bit", "RGB10");
+    // "RGB 10-bit" only exists in the DeckLink map; on Deltacast/Bluefish it
+    // would silently degrade to 8-bit YCbCr.
+    if(currentVendor() == Vendor::DeckLink)
+      m_pixelFormatCombo->addItem("RGB 10-bit", "RGB10");
   }
 
   refreshDeviceList();
@@ -572,7 +587,7 @@ Device::DeviceSettings VideoInputSettingsWidget::getSettings() const
   set.pixelFormat = m_pixelFormatCombo->currentData().toString();
   set.resolutionMode = m_resolutionModeCombo->currentData().toInt();
   set.routingMode = m_routingModeCombo->currentData().toInt();
-  set.useRDMA = true;
+  set.useRDMA = m_rdmaCheckbox->isChecked();
   s.deviceSpecificSettings = QVariant::fromValue(set);
   return s;
 }
@@ -603,6 +618,7 @@ void VideoInputSettingsWidget::setSettings(const Device::DeviceSettings& s)
   for(int i = 0; i < m_routingModeCombo->count(); ++i)
     if(m_routingModeCombo->itemData(i).toInt() == set.routingMode)
       m_routingModeCombo->setCurrentIndex(i);
+  m_rdmaCheckbox->setChecked(set.useRDMA);
 }
 
 // =============================================================================

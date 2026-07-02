@@ -62,10 +62,14 @@ struct DeckLinkCpuCapture final : score::gfx::interop::GpuDirectCaptureStrategy
     const int slot = m_publisher.consume();
     if(slot < 0 || static_cast<std::size_t>(slot) >= kSlotCount)
       return;
-    const auto sz = cfg.outputTexture->pixelSize();
     QRhiTextureSubresourceUploadDescription sub(
         m_slots[static_cast<std::size_t>(slot)].data(), cfg.frameByteSize);
-    sub.setDataStride(static_cast<quint32>(sz.width()) * 4u);
+    // Source stride = the raster's true pitch (v210 rows are 48-pixel-group
+    // padded, wider than the decoder texture's texWidth*4 when w % 48 != 0,
+    // e.g. 720p — the texture-width stride sheared those frames).
+    sub.setDataStride(
+        cfg.height > 0 ? cfg.frameByteSize / static_cast<quint32>(cfg.height)
+                       : 0);
     res.uploadTexture(
         cfg.outputTexture,
         QRhiTextureUploadDescription{QRhiTextureUploadEntry{0, 0, sub}});

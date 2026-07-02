@@ -112,6 +112,7 @@ Gfx::Deltacast::DeltacastOutputSettings toDeltacast(const VideoOutputSettings& s
   d.videoStandard = Gfx::Deltacast::vhdStandardFromToken(s.videoFormat);
   d.bufferPacking = Gfx::Deltacast::vhdPackingFromToken(s.pixelFormat);
   d.fractionalClock = Gfx::Deltacast::vhdIsFractionalRate(s.videoFormat);
+  d.useRDMA = s.useRDMA; // user-visible switch to force the host-staged path
   return d;
 }
 #endif
@@ -343,9 +344,13 @@ VideoOutputSettingsWidget::VideoOutputSettingsWidget(QWidget* parent)
   m_height->setValue(1080);
   m_layout->addRow(tr("Height"), m_height);
 
-  m_rate = new QSpinBox(this);
-  m_rate->setRange(24, 120);
-  m_rate->setValue(60);
+  // Double: fractional broadcast rates (59.94/29.97/23.98) must round-trip
+  // through the dialog unharmed — an int spinbox stored 59 and the AJA
+  // backend's manualRenderingRate then drifted ~1.6% off the SDI clock.
+  m_rate = new QDoubleSpinBox(this);
+  m_rate->setRange(23.98, 120.0);
+  m_rate->setDecimals(2);
+  m_rate->setValue(60.0);
   m_layout->addRow(tr("Frame Rate"), m_rate);
 
   m_8kModeCombo = new QComboBox(this);
@@ -399,7 +404,8 @@ void VideoOutputSettingsWidget::onVendorChanged()
   setRow(m_channelCombo, isAja);
   setRow(m_8kModeCombo, isAja);
   setRow(m_hdrModeCombo, isAja);
-  m_rdmaCheckbox->setVisible(isAja);
+  // GPU-direct applies to AJA (RDMA/DVP) and Deltacast (RDMA app buffers).
+  m_rdmaCheckbox->setVisible(isAja || currentVendor() == Vendor::Deltacast);
 
   updatePixelFormatList();
   refreshDeviceList();
@@ -552,11 +558,20 @@ void VideoOutputSettingsWidget::updatePixelFormatList()
         {tr("RGB 12-bit"), "RGB12"},        {tr("RGB 12-bit packed"), "RGB12P"},
         {tr("RGB 10-bit DPX"), "RGB10DPX"}, {tr("RGB 24-bit"), "RGB24"}};
   }
-  else
+  else if(currentVendor() == Vendor::DeckLink)
   {
     master = {
         {tr("YCbCr 8-bit"), "YCbCr8"}, {tr("YCbCr 10-bit"), "YCbCr10"},
         {tr("BGRA 8-bit"), "RGB8"},    {tr("RGB 10-bit"), "RGB10"}};
+  }
+  else
+  {
+    // Deltacast/Bluefish have no 10-bit RGB wire packing in our maps —
+    // offering the token would silently degrade to 8-bit YCbCr.
+    master = {
+        {tr("YCbCr 8-bit"), "YCbCr8"},
+        {tr("YCbCr 10-bit"), "YCbCr10"},
+        {tr("BGRA 8-bit"), "RGB8"}};
   }
 
   const int devIdx = m_deviceCombo->currentData().toInt();
@@ -617,7 +632,7 @@ void VideoOutputSettingsWidget::setSettings(const Device::DeviceSettings& settin
 
   m_width->setValue(set.width);
   m_height->setValue(set.height);
-  m_rate->setValue(static_cast<int>(set.rate));
+  m_rate->setValue(set.rate);
   m_rdmaCheckbox->setChecked(set.useRDMA);
   int mode8KIdx = m_8kModeCombo->findData(set.mode8K);
   if(mode8KIdx >= 0)

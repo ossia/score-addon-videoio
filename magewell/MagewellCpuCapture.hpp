@@ -63,10 +63,14 @@ struct MagewellCpuCapture final : score::gfx::interop::GpuDirectCaptureStrategy
     const int slot = m_publisher.consume();
     if(slot < 0 || static_cast<std::size_t>(slot) >= kSlotCount)
       return;
-    const auto sz = cfg.outputTexture->pixelSize();
     QRhiTextureSubresourceUploadDescription sub(
         m_slots[static_cast<std::size_t>(slot)].data(), cfg.frameByteSize);
-    sub.setDataStride(static_cast<quint32>(sz.width()) * 4u);
+    // Source stride = the raster's true pitch (FOURCC_CalcMinStride pads V210
+    // rows to 48-pixel groups, wider than the decoder texture's texWidth*4
+    // for arbitrary Magewell widths — the texture-width stride sheared those).
+    sub.setDataStride(
+        cfg.height > 0 ? cfg.frameByteSize / static_cast<quint32>(cfg.height)
+                       : 0);
     res.uploadTexture(
         cfg.outputTexture,
         QRhiTextureUploadDescription{QRhiTextureUploadEntry{0, 0, sub}});

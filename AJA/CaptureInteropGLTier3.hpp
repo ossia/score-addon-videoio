@@ -186,8 +186,17 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
     // Extract the slot's native GL buffer name (the P2P DMA target). The
     // storage buffer can be bound to GL_PIXEL_UNPACK_BUFFER even though it was
     // allocated for GL_SHADER_STORAGE_BUFFER — both are server-side memory and
-    // the binding target picks the usage; cudaGraphicsGLRegisterBuffer keeps
-    // its mapping valid across binding-target changes.
+    // the binding target picks the usage.
+    //
+    // KNOWN LIMITATION (review 2026-07): CudaP2PBridge maps the registered GL
+    // buffer once and keeps it mapped for its lifetime, and CUDA specifies
+    // that accessing a registered resource through GL *while mapped* is
+    // undefined. Fixing it properly means per-access map/unmap in the bridge
+    // (mapped pointers are only valid per map cycle, so every cached slot
+    // gpuVA in GpuRingBuffer/consumers must be refreshed each frame) — a
+    // redesign to do together with the first Linux GL bring-up, not blindly.
+    // In practice NVIDIA keeps the mapping coherent here, but do not ship the
+    // Linux GL tier-3 path without revisiting this.
     auto& slot = m_ring.slot(static_cast<std::size_t>(slotIdx));
     if(!slot.qrhiBuffer)
       return;

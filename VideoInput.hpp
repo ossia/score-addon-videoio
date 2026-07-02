@@ -10,6 +10,7 @@
 
 #include <verdigris>
 
+class QCheckBox;
 class QComboBox;
 class QFormLayout;
 class QLineEdit;
@@ -103,6 +104,7 @@ private:
   QComboBox* m_pixelFormatCombo{};
   QComboBox* m_resolutionModeCombo{};
   QComboBox* m_routingModeCombo{};
+  QCheckBox* m_rdmaCheckbox{};
 };
 
 } // namespace Gfx::VideoIO

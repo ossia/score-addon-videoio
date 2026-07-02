@@ -13,6 +13,7 @@
 class QComboBox;
 class QCheckBox;
 class QSpinBox;
+class QDoubleSpinBox;
 class QLineEdit;
 class QFormLayout;
 
@@ -110,7 +111,7 @@ private:
   QComboBox* m_hdrModeCombo{};
   QSpinBox* m_width{};
   QSpinBox* m_height{};
-  QSpinBox* m_rate{};
+  QDoubleSpinBox* m_rate{};
   QCheckBox* m_rdmaCheckbox{};
 };
 
