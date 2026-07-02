@@ -12,7 +12,9 @@
 #include <QDebug>
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
+#include <thread>
 
 namespace Gfx::Bluefish
 {
@@ -151,18 +153,27 @@ void BluefishInputBackend::start()
 void BluefishInputBackend::stop()
 {
   m_running.store(false, std::memory_order_release);
+  // Stop the AutoCapture FIFO BEFORE joining: the reception thread may be
+  // parked inside bfcAutoCaptureGetFilledBuffer(RETURN_MODE_BLOCKING) with no
+  // signal on the wire, and only the capture stop unblocks it (the old
+  // stop-after-join order could hang the render thread forever).
+  if(m_bvc && m_captureStarted)
+    bfcVideoCaptureStop(m_bvc);
   if(m_thread.joinable())
     m_thread.join();
 
   if(m_bvc)
   {
-    if(m_captureStarted)
-      bfcVideoCaptureStop(m_bvc);
     if(m_buffersCreated)
       bfcAutoCaptureDestroyInternalBuffers(m_bvc);
     bfcDetach(m_bvc);
     bfcDestroy(m_bvc);
     m_bvc = nullptr;
+  }
+  if(m_conv)
+  {
+    bfcConversionDestroy(m_conv);
+    m_conv = nullptr;
   }
   m_captureStarted = false;
   m_buffersCreated = false;
@@ -175,17 +186,35 @@ void BluefishInputBackend::runLoop()
   while(m_running.load(std::memory_order_acquire))
   {
     auto* strat = m_strategy;
-    if(!strat)
-      continue;
-    const std::size_t slots = strat->slotCount();
+    const std::size_t slots = strat ? strat->slotCount() : 0;
     if(slots == 0)
+    {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
+    }
 
     blue_auto_buffer_info info{};
     info.CardBufferId = -1;
     const BErr r = bfcAutoCaptureGetFilledBuffer(m_bvc, &info, RETURN_MODE_BLOCKING);
     if(BLUE_FAIL(r) || info.CardBufferId < 0)
+    {
+      // Per the SDK Capture sample: the blocking call CAN return without a
+      // buffer, and re-calling in a tight loop pins a core. FIFO stopped =>
+      // shutdown (or signal teardown); no-buffer => wait for the next input
+      // interrupt; underrun / invalid mode => brief sleep.
+      if(r == BERR_FIFO_NOT_RUNNING)
+        break;
+      if(r == BERR_NO_ERROR)
+      {
+        unsigned long fieldCount = 0;
+        bfcWaitVideoInputSync(m_bvc, UPD_FMT_FRAME, &fieldCount);
+      }
+      else
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
       continue;
+    }
 
     // Only publish complete frames whose mode matches the negotiated one; the
     // SDK owns info.pBufferVideo, so copy it into the strategy slot then return.
@@ -194,9 +223,11 @@ void BluefishInputBackend::runLoop()
     {
       if(void* dst = strat->slotBuffer(writeIdx))
       {
-        std::memcpy(
-            dst, info.pBufferVideo,
-            std::min<BLUE_U32>(info.SizeVideo, m_frameByteSize));
+        if(!ingestBuffer(info, dst))
+        {
+          bfcAutoCaptureReturnBuffer(m_bvc, &info);
+          continue;
+        }
         strat->ingestFrame(writeIdx);
         m_ring.latestSlot.store(writeIdx, std::memory_order_release);
         m_ring.latestFrameId.fetch_add(1, std::memory_order_release);
@@ -206,6 +237,45 @@ void BluefishInputBackend::runLoop()
 
     bfcAutoCaptureReturnBuffer(m_bvc, &info);
   }
+}
+
+bool BluefishInputBackend::ingestBuffer(blue_auto_buffer_info& info, void* dst)
+{
+  // UHD 2SI inputs deliver a sample-interleaved buffer; the SDK flags it via
+  // RequiredConversionType and the CaptureAndReplay sample runs the matching
+  // bfcConvert_TsiToSquareDivision_* to rebuild the plain raster. Publishing
+  // the buffer verbatim would show interleave-scrambled quadrants.
+  if(info.RequiredConversionType == BLUE_CONVERSION_TYPE_2SI_TO_SQD)
+  {
+    if(!m_conv)
+      m_conv = bfcConversionFactory();
+    if(!m_conv)
+      return false;
+    const auto w = static_cast<BLUE_U32>(m_width);
+    const auto h = static_cast<BLUE_U32>(m_height);
+    switch(m_settings.memoryFormat)
+    {
+      case MEM_FMT_YUVS: // == MEM_FMT_BV8
+      case MEM_FMT_2VUY:
+        return !BLUE_FAIL(bfcConvert_TsiToSquareDivision_2VUY(
+            m_conv, w, h, info.pBufferVideo, dst));
+      case MEM_FMT_V210:
+        return !BLUE_FAIL(bfcConvert_TsiToSquareDivision_V210(
+            m_conv, w, h, info.pBufferVideo, dst));
+      case MEM_FMT_RGBA:
+      case MEM_FMT_ARGB_PC: // == MEM_FMT_BGRA
+        return !BLUE_FAIL(bfcConvert_TsiToSquareDivision_ARGB32(
+            m_conv, w, h, info.pBufferVideo, dst));
+      default:
+        qWarning() << "Bluefish input: no 2SI->SQD conversion for memory format"
+                   << m_settings.memoryFormat << "- dropping frame";
+        return false;
+    }
+  }
+
+  std::memcpy(
+      dst, info.pBufferVideo, std::min<BLUE_U32>(info.SizeVideo, m_frameByteSize));
+  return true;
 }
 
 } // namespace Gfx::Bluefish

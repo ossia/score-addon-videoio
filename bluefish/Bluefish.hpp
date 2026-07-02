@@ -10,4 +10,5 @@
 #endif
 
 #include <BlueVelvetC.h>
+#include <BlueVelvetCConversion.h>
 #include <BlueVelvetCUtils.h>

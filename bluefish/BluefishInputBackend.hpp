@@ -52,11 +52,16 @@ public:
 
 private:
   void runLoop(); ///< AutoCapture reception loop (Get/Return filled buffer).
+  /// Copy (or 2SI->SQD convert) a filled SDK buffer into a strategy slot.
+  bool ingestBuffer(blue_auto_buffer_info& info, void* dst);
 
   BluefishInputSettings m_settings;
   score::gfx::interop::GpuDirectCaptureSlotRing& m_ring;
 
   BLUEVELVETC_HANDLE m_bvc{nullptr};
+  /// Lazily-created conversion engine for UHD 2SI -> square-division rasters
+  /// (blue_auto_buffer_info::RequiredConversionType).
+  BFC_CONVERSION_HANDLE m_conv{nullptr};
   score::gfx::interop::GpuDirectCaptureStrategy* m_strategy{};
 
   BLUE_U32 m_videoModeExt{VID_FMT_EXT_INVALID};
