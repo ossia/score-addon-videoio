@@ -66,6 +66,7 @@ private:
 
   int m_width{};
   int m_height{};
+  int m_rowBytes{};
   uint32_t m_frameByteSize{};
   bool m_started{};
 };

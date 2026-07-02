@@ -69,8 +69,12 @@ public:
   InputCallback(
       score::gfx::interop::GpuDirectCaptureStrategy** strategy,
       score::gfx::interop::GpuDirectCaptureSlotRing& ring,
-      std::uint32_t frameByteSize)
-      : m_strategy{strategy}, m_ring{ring}, m_frameByteSize{frameByteSize}
+      std::uint32_t frameByteSize, int rowBytes, int height)
+      : m_strategy{strategy}
+      , m_ring{ring}
+      , m_frameByteSize{frameByteSize}
+      , m_rowBytes{rowBytes}
+      , m_height{height}
   {
   }
 
@@ -110,22 +114,45 @@ public:
     auto* strat = *m_strategy;
     if(!strat || !frame)
       return S_OK;
+    // Signal loss produces placeholder frames flagged bmdFrameHasNoInputSource;
+    // the samples never forward those (the consumer keeps the last good frame).
+    if(frame->GetFlags() & bmdFrameHasNoInputSource)
+      return S_OK;
     // SDK 16.0: frame bytes are accessed via IDeckLinkVideoBuffer, not the
     // frame interface.
     ComPtr<IDeckLinkVideoBuffer> buf;
     if(frame->QueryInterface(IID_IDeckLinkVideoBuffer, buf.putVoid()) != S_OK
        || !buf)
       return S_OK;
+    if(buf->StartAccess(bmdBufferAccessRead) != S_OK)
+      return S_OK;
     void* src = nullptr;
-    buf->StartAccess(bmdBufferAccessRead);
     const HRESULT hr = buf->GetBytes(&src);
 
     const std::size_t slot = m_slot;
     if(SUCCEEDED(hr) && src)
     {
-      if(void* dst = strat->slotBuffer(slot))
+      // Use the frame's own geometry, per sample practice: devices may pad
+      // row bytes, and a drifted mode must neither overread the SDK buffer
+      // nor skew rows in the tightly-packed slot.
+      const long srcRowBytes = frame->GetRowBytes();
+      const long srcRows = frame->GetHeight();
+      void* dst = strat->slotBuffer(slot);
+      if(dst && srcRowBytes >= m_rowBytes && srcRows >= m_height)
       {
-        std::memcpy(dst, src, m_frameByteSize);
+        if(srcRowBytes == m_rowBytes)
+        {
+          std::memcpy(dst, src, m_frameByteSize);
+        }
+        else
+        {
+          auto* s = static_cast<const std::uint8_t*>(src);
+          auto* d = static_cast<std::uint8_t*>(dst);
+          for(int y = 0; y < m_height; ++y)
+            std::memcpy(
+                d + std::size_t(y) * m_rowBytes,
+                s + std::size_t(y) * srcRowBytes, m_rowBytes);
+        }
         strat->ingestFrame(slot);
         m_ring.latestSlot.store(slot, std::memory_order_release);
         m_ring.latestFrameId.fetch_add(1, std::memory_order_release);
@@ -141,6 +168,8 @@ private:
   score::gfx::interop::GpuDirectCaptureStrategy** m_strategy{};
   score::gfx::interop::GpuDirectCaptureSlotRing& m_ring;
   std::uint32_t m_frameByteSize{};
+  int m_rowBytes{};
+  int m_height{};
   std::size_t m_slot{0};
   std::atomic<ULONG> m_ref{1};
 };
@@ -191,8 +220,8 @@ bool DeckLinkInputBackend::open()
   }
   m_width = static_cast<int>(mode->GetWidth());
   m_height = static_cast<int>(mode->GetHeight());
-  m_frameByteSize = static_cast<std::uint32_t>(
-                        rowBytesFor(m_settings.pixelFormat, m_width))
+  m_rowBytes = rowBytesFor(m_settings.pixelFormat, m_width);
+  m_frameByteSize = static_cast<std::uint32_t>(m_rowBytes)
                     * static_cast<std::uint32_t>(m_height);
 
   if(m_input->EnableVideoInput(
@@ -269,10 +298,21 @@ void DeckLinkInputBackend::start()
 {
   if(m_started || !m_input)
     return;
-  m_callback = ComPtr<IDeckLinkInputCallback>(
-      new InputCallback(&m_strategy, m_ring, m_frameByteSize)); // adopt ref
-  m_input->SetCallback(m_callback.get());
-  m_input->StartStreams();
+  m_callback = ComPtr<IDeckLinkInputCallback>(new InputCallback(
+      &m_strategy, m_ring, m_frameByteSize, m_rowBytes, m_height)); // adopt ref
+  if(m_input->SetCallback(m_callback.get()) != S_OK)
+  {
+    qWarning() << "DeckLink: SetCallback failed";
+    m_callback.reset();
+    return;
+  }
+  if(m_input->StartStreams() != S_OK)
+  {
+    qWarning() << "DeckLink: StartStreams failed";
+    m_input->SetCallback(nullptr);
+    m_callback.reset();
+    return;
+  }
   m_started = true;
 }
 
@@ -280,7 +320,13 @@ void DeckLinkInputBackend::stop()
 {
   if(m_input && m_started)
   {
+    // Sample order: stop + flush + disable the input, then detach the
+    // callback. FlushStreams drops buffered frames so no in-flight
+    // VideoInputFrameArrived can land after we return and the renderer
+    // frees the slot ring.
     m_input->StopStreams();
+    m_input->FlushStreams();
+    m_input->DisableVideoInput();
     m_input->SetCallback(nullptr);
   }
   m_callback.reset();

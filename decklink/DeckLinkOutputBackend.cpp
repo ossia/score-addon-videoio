@@ -11,69 +11,26 @@ extern "C" {
 
 #include <QDebug>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 
 namespace Gfx::DeckLink
 {
 namespace
 {
 
-/// Zero-copy IDeckLinkVideoBuffer over a pinned host slot. Wrapped by
-/// CreateVideoFrameWithBuffer so the card DMAs straight from HostStagedOutput's
-/// ring (no extra copy).
-class BufferFrame final : public IDeckLinkVideoBuffer
-{
-public:
-  BufferFrame(void* p, ULONGLONG n) : m_p{p}, m_n{n} {}
-
-  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** ppv) override
-  {
-    if(!ppv)
-      return E_POINTER;
-    if(IsEqualIID(iid, IID_IUnknown) || IsEqualIID(iid, IID_IDeckLinkVideoBuffer))
-    {
-      *ppv = static_cast<IDeckLinkVideoBuffer*>(this);
-      AddRef();
-      return S_OK;
-    }
-    *ppv = nullptr;
-    return E_NOINTERFACE;
-  }
-  ULONG STDMETHODCALLTYPE AddRef() override { return ++m_ref; }
-  ULONG STDMETHODCALLTYPE Release() override
-  {
-    const ULONG r = --m_ref;
-    if(r == 0)
-      delete this;
-    return r;
-  }
-
-  HRESULT STDMETHODCALLTYPE GetBytes(void** buffer) override
-  {
-    *buffer = m_p;
-    return S_OK;
-  }
-  HRESULT STDMETHODCALLTYPE GetSize(ULONGLONG* size) override
-  {
-    *size = m_n;
-    return S_OK;
-  }
-  HRESULT STDMETHODCALLTYPE StartAccess(BMDBufferAccessFlags) override { return S_OK; }
-  HRESULT STDMETHODCALLTYPE EndAccess(BMDBufferAccessFlags) override { return S_OK; }
-
-private:
-  void* m_p{};
-  ULONGLONG m_n{};
-  std::atomic<ULONG> m_ref{1};
-};
-
-/// Scheduled-playback completion callback: each freed output slot releases one
-/// semaphore permit, which the pump's waitForTick() consumes (push -> pull bridge).
+/// Scheduled-playback completion callback. Routes the driver-thread events to
+/// the backend: each completed frame returns to the free pool (+ one pacing
+/// permit), and ScheduledPlaybackHasStopped wakes quiesce().
 class CompletionCallback final : public IDeckLinkVideoOutputCallback
 {
 public:
-  explicit CompletionCallback(std::counting_semaphore<64>& sem) : m_sem{sem} {}
+  explicit CompletionCallback(DeckLinkOutputBackend& backend)
+      : m_backend{backend}
+  {
+  }
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** ppv) override
   {
@@ -99,15 +56,22 @@ public:
   }
 
   HRESULT STDMETHODCALLTYPE ScheduledFrameCompleted(
-      IDeckLinkVideoFrame*, BMDOutputFrameCompletionResult) override
+      IDeckLinkVideoFrame* frame, BMDOutputFrameCompletionResult result) override
   {
-    m_sem.release();
+    if(result == bmdOutputFrameDisplayedLate || result == bmdOutputFrameDropped)
+      qDebug() << "DeckLink: scheduled frame"
+               << (result == bmdOutputFrameDropped ? "dropped" : "late");
+    m_backend.onFrameCompleted(frame);
     return S_OK;
   }
-  HRESULT STDMETHODCALLTYPE ScheduledPlaybackHasStopped() override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE ScheduledPlaybackHasStopped() override
+  {
+    m_backend.onPlaybackStopped();
+    return S_OK;
+  }
 
 private:
-  std::counting_semaphore<64>& m_sem;
+  DeckLinkOutputBackend& m_backend;
   std::atomic<ULONG> m_ref{1};
 };
 
@@ -132,6 +96,15 @@ bool DeckLinkOutputBackend::open(score::gfx::GraphicsApi)
   if(m_device->QueryInterface(IID_IDeckLinkOutput, m_output.putVoid()) != S_OK
      || !m_output)
     return false;
+
+  // A previous session must not leak pacing/clock state into this one: the
+  // scheduled-playback clock restarts at 0 on StartScheduledPlayback, so the
+  // display-time counter and the permit count both restart with it.
+  drainPermits();
+  m_frameCount = 0;
+  m_started = false;
+  m_quiesced = false;
+  m_playbackStopped = false;
 
   // Resolve the display mode -> geometry + frame rate.
   ComPtr<IDeckLinkDisplayMode> mode;
@@ -166,7 +139,14 @@ bool DeckLinkOutputBackend::open(score::gfx::GraphicsApi)
   }
 
   int rb = 0;
-  m_output->RowBytesForPixelFormat(m_settings.pixelFormat, m_width, &rb);
+  if(m_output->RowBytesForPixelFormat(m_settings.pixelFormat, m_width, &rb)
+         != S_OK
+     || rb <= 0)
+  {
+    qWarning() << "DeckLink: RowBytesForPixelFormat failed for this "
+                  "mode/pixel-format combination";
+    return false;
+  }
   m_rowBytes = rb;
   m_frameByteSize = static_cast<uint32_t>(rb) * static_cast<uint32_t>(m_height);
 
@@ -178,30 +158,94 @@ bool DeckLinkOutputBackend::open(score::gfx::GraphicsApi)
   }
 
   m_callback = ComPtr<IDeckLinkVideoOutputCallback>(
-      new CompletionCallback(m_freeSlots)); // adopt the initial ref
-  m_output->SetScheduledFrameCompletionCallback(m_callback.get());
+      new CompletionCallback(*this)); // adopt the initial ref
+  if(m_output->SetScheduledFrameCompletionCallback(m_callback.get()) != S_OK)
+  {
+    qWarning() << "DeckLink: SetScheduledFrameCompletionCallback failed";
+    close();
+    return false;
+  }
 
-  // Seed preroll permits so the first kPreroll submits fill the queue, then
-  // StartScheduledPlayback fires (in submitFrame).
-  m_freeSlots.release(kPreroll);
+  // Completion-tracked frame pool: the driver only ever sees these SDK-
+  // allocated frames, never HostStagedOutput's ring memory, so a frame's
+  // bytes stay immutable from ScheduleVideoFrame until its completion (the
+  // SignalGenerator sample's invariant). One pacing permit per pool frame.
+  {
+    std::lock_guard lock{m_poolMutex};
+    m_pool.reserve(kPoolSize);
+    m_free.reserve(kPoolSize);
+    for(int i = 0; i < kPoolSize; ++i)
+    {
+      ComPtr<IDeckLinkMutableVideoFrame> frame;
+      if(m_output->CreateVideoFrame(
+             m_width, m_height, m_rowBytes, m_settings.pixelFormat,
+             bmdFrameFlagDefault, frame.put())
+             != S_OK
+         || !frame)
+      {
+        qWarning() << "DeckLink: CreateVideoFrame failed at pool slot" << i;
+        m_pool.clear();
+        m_free.clear();
+        close();
+        return false;
+      }
+      m_free.push_back(frame.get());
+      m_pool.push_back(std::move(frame));
+    }
+  }
+  m_freeSlots.release(kPoolSize);
+
   m_open = true;
   return true;
+}
+
+void DeckLinkOutputBackend::quiesce()
+{
+  // Stop the scheduled queue and wait for ScheduledPlaybackHasStopped before
+  // the node releases the staging ring — the samples' documented shutdown
+  // order ("recommended to wait ... before disabling output"). After this the
+  // driver holds no reference into any of our buffers.
+  if(!m_output || !m_started)
+  {
+    m_quiesced = true;
+    return;
+  }
+
+  {
+    std::lock_guard lock{m_stopMutex};
+    m_playbackStopped = false;
+  }
+  BMDTimeValue actualStop = 0;
+  m_output->StopScheduledPlayback(0, &actualStop, m_timeScale);
+  {
+    std::unique_lock lock{m_stopMutex};
+    if(!m_stopCv.wait_for(lock, std::chrono::milliseconds(500), [this] {
+         return m_playbackStopped;
+       }))
+      qWarning() << "DeckLink: timed out waiting for ScheduledPlaybackHasStopped";
+  }
+  m_started = false;
+  m_quiesced = true;
 }
 
 void DeckLinkOutputBackend::close()
 {
   if(m_output)
   {
-    if(m_started)
-    {
-      BMDTimeValue actualStop = 0;
-      m_output->StopScheduledPlayback(0, &actualStop, m_timeScale);
-      m_started = false;
-    }
+    if(!m_quiesced)
+      quiesce();
     m_output->SetScheduledFrameCompletionCallback(nullptr);
     m_output->DisableVideoOutput();
   }
-  m_frames.clear();
+  {
+    std::lock_guard lock{m_poolMutex};
+    m_free.clear();
+    m_pool.clear(); // releases our refs; the driver's are gone after quiesce()
+  }
+  drainPermits();
+  m_frameCount = 0;
+  m_started = false;
+  m_quiesced = false;
   m_callback.reset();
   m_output.reset();
   m_device.reset();
@@ -244,22 +288,11 @@ DeckLinkOutputBackend::planes() const
 
 score::gfx::interop::VendorDmaRegistrar DeckLinkOutputBackend::registrar()
 {
+  // The staging ring is never handed to the driver (submitFrame copies into
+  // the completion-tracked pool), so the slots need no vendor registration.
   score::gfx::interop::VendorDmaRegistrar reg;
-  reg.registerSlot = [this](void* ptr, std::uint32_t size) -> bool {
-    if(m_frames.find(ptr) != m_frames.end())
-      return true;
-    auto* buf = new BufferFrame(ptr, size); // refcount 1
-    ComPtr<IDeckLinkMutableVideoFrame> frame;
-    const HRESULT hr = m_output->CreateVideoFrameWithBuffer(
-        m_width, m_height, m_rowBytes, m_settings.pixelFormat,
-        bmdFrameFlagDefault, buf, frame.put());
-    buf->Release(); // the frame now owns the buffer ref
-    if(FAILED(hr) || !frame)
-      return false;
-    m_frames.emplace(ptr, std::move(frame));
-    return true;
-  };
-  reg.releaseSlot = [this](void* ptr, std::uint32_t) { m_frames.erase(ptr); };
+  reg.registerSlot = [](void*, std::uint32_t) { return true; };
+  reg.releaseSlot = [](void*, std::uint32_t) {};
   return reg;
 }
 
@@ -276,36 +309,129 @@ score::gfx::interop::PacedFramePump::Hooks DeckLinkOutputBackend::pacingHooks()
 {
   score::gfx::interop::PacedFramePump::Hooks h;
   h.waitForTick = [this] { return waitForTick(); };
-  h.canAccept = {}; // back-pressure is the semaphore in waitForTick
+  h.canAccept = {}; // back-pressure is the free-pool semaphore in waitForTick
   h.submit = [this](void* p) { return submitFrame(p); };
   return h;
 }
 
 bool DeckLinkOutputBackend::waitForTick()
 {
+  // One permit == one free pool frame. The pump only calls this when a frame
+  // is already pending, so a consumed permit is always followed by a submit
+  // (which returns it on failure); completions release new permits.
   return m_freeSlots.try_acquire_for(std::chrono::milliseconds(100));
 }
 
 bool DeckLinkOutputBackend::submitFrame(void* framePtr)
 {
-  const auto it = m_frames.find(framePtr);
-  if(it == m_frames.end())
+  if(!m_output || !framePtr)
+  {
+    m_freeSlots.release(); // give back the permit from waitForTick
     return false;
+  }
+
+  IDeckLinkMutableVideoFrame* frame = nullptr;
+  {
+    std::lock_guard lock{m_poolMutex};
+    if(!m_free.empty())
+    {
+      frame = m_free.back();
+      m_free.pop_back();
+    }
+  }
+  if(!frame)
+  {
+    // Cannot happen while the permit accounting holds; recover anyway.
+    m_freeSlots.release();
+    return false;
+  }
+
+  // SDK 16.0: frame bytes are accessed via IDeckLinkVideoBuffer, bracketed by
+  // StartAccess/EndAccess (the samples' ScopedBufferBytes pattern).
+  ComPtr<IDeckLinkVideoBuffer> buf;
+  if(frame->QueryInterface(IID_IDeckLinkVideoBuffer, buf.putVoid()) != S_OK
+     || !buf || buf->StartAccess(bmdBufferAccessWrite) != S_OK)
+  {
+    std::lock_guard lock{m_poolMutex};
+    m_free.push_back(frame);
+    m_freeSlots.release();
+    return false;
+  }
+  void* dst = nullptr;
+  if(buf->GetBytes(&dst) != S_OK || !dst)
+  {
+    buf->EndAccess(bmdBufferAccessWrite);
+    std::lock_guard lock{m_poolMutex};
+    m_free.push_back(frame);
+    m_freeSlots.release();
+    return false;
+  }
+  std::memcpy(dst, framePtr, m_frameByteSize);
+  buf->EndAccess(bmdBufferAccessWrite);
 
   const HRESULT hr = m_output->ScheduleVideoFrame(
-      it->second.get(),
-      static_cast<BMDTimeValue>(m_frameCount * m_frameDuration), m_frameDuration,
-      m_timeScale);
+      frame, static_cast<BMDTimeValue>(m_frameCount * m_frameDuration),
+      m_frameDuration, m_timeScale);
   if(FAILED(hr))
+  {
+    std::lock_guard lock{m_poolMutex};
+    m_free.push_back(frame);
+    m_freeSlots.release();
     return false;
+  }
 
   ++m_frameCount;
-  if(!m_started && ++m_scheduled >= kPreroll)
-  {
-    m_output->StartScheduledPlayback(0, m_timeScale, 1.0);
-    m_started = true;
-  }
+  if(!m_started)
+    startPlaybackIfPrerolled();
   return true;
+}
+
+void DeckLinkOutputBackend::startPlaybackIfPrerolled()
+{
+  // Gate on the device-reported buffered count, not our own submit count, so
+  // driver-side preroll drops can't wedge the start (sample practice).
+  uint32_t buffered = 0;
+  if(m_output->GetBufferedVideoFrameCount(&buffered) != S_OK
+     || buffered < kPreroll)
+    return;
+  if(m_output->StartScheduledPlayback(0, m_timeScale, 1.0) == S_OK)
+    m_started = true;
+  else
+    qWarning() << "DeckLink: StartScheduledPlayback failed";
+}
+
+void DeckLinkOutputBackend::onFrameCompleted(IDeckLinkVideoFrame* frame) noexcept
+{
+  auto* mutableFrame = static_cast<IDeckLinkMutableVideoFrame*>(frame);
+  {
+    std::lock_guard lock{m_poolMutex};
+    // Only pool frames come back through here; guard against duplicates or a
+    // completion racing close() (pool already cleared).
+    const bool inPool = std::any_of(
+        m_pool.begin(), m_pool.end(),
+        [&](const auto& f) { return f.get() == mutableFrame; });
+    const bool alreadyFree
+        = std::find(m_free.begin(), m_free.end(), mutableFrame) != m_free.end();
+    if(!inPool || alreadyFree)
+      return;
+    m_free.push_back(mutableFrame);
+  }
+  m_freeSlots.release();
+}
+
+void DeckLinkOutputBackend::onPlaybackStopped() noexcept
+{
+  {
+    std::lock_guard lock{m_stopMutex};
+    m_playbackStopped = true;
+  }
+  m_stopCv.notify_all();
+}
+
+void DeckLinkOutputBackend::drainPermits() noexcept
+{
+  while(m_freeSlots.try_acquire())
+    ;
 }
 
 } // namespace Gfx::DeckLink

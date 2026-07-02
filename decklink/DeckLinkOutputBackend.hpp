@@ -4,9 +4,11 @@
 
 #include <Gfx/Graph/DirectVideoOutputBackend.hpp>
 
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
 #include <semaphore>
-#include <unordered_map>
+#include <vector>
 
 namespace Gfx::DeckLink
 {
@@ -21,12 +23,18 @@ struct DeckLinkOutputSettings
 /**
  * @brief DeckLink playout backend (score::gfx::DirectVideoOutputBackend).
  *
- * Scheduled playback (the canonical SignalGenerator-sample model): host frames
- * from HostStagedOutput's pinned ring are wrapped zero-copy as IDeckLinkVideoFrames
- * (registrar -> IDeckLinkVideoBuffer + CreateVideoFrameWithBuffer) and handed to
- * ScheduleVideoFrame. Pacing bridges DeckLink's push-model completion callback to
- * the pump's pull-model via a counting semaphore (a permit = a free output slot;
- * seeded with the preroll, released on each ScheduledFrameCompleted).
+ * Scheduled playback per the SignalGenerator sample model, with the sample's
+ * key invariant: a frame's pixels are immutable from ScheduleVideoFrame until
+ * its ScheduledFrameCompleted. The backend owns a small pool of SDK-allocated
+ * IDeckLinkMutableVideoFrames; submitFrame() copies the staged bytes out of
+ * the (reusable) host ring into a free pool frame and schedules that, so the
+ * driver never retains a pointer into HostStagedOutput's ring. Pacing bridges
+ * DeckLink's push-model completion callback to the pump's pull-model via a
+ * counting semaphore: one permit per FREE POOL FRAME (seeded with the pool,
+ * consumed by waitForTick — which the pump only calls when a frame is
+ * pending — and released by each completion, or given back on a failed
+ * submit). StartScheduledPlayback fires once GetBufferedVideoFrameCount
+ * reaches the preroll depth, per the samples.
  */
 class DeckLinkOutputBackend final : public score::gfx::DirectVideoOutputBackend
 {
@@ -35,6 +43,7 @@ public:
   ~DeckLinkOutputBackend() override;
 
   bool open(score::gfx::GraphicsApi api) override;
+  void quiesce() override;
   void close() override;
 
   int width() const noexcept override { return m_width; }
@@ -57,26 +66,34 @@ public:
     return {};
   }
   /// Opt into the GPU-direct (DVP) download in HostStagedOutput: the encoder
-  /// texture is DMA'd straight into the pinned ring slots (each wrapped as a
-  /// DeckLink frame via registrar()), skipping the QRhi readback. Falls back to
-  /// CPU readback when no DVP backend is present.
+  /// texture is DMA'd straight into the pinned ring slots, skipping the QRhi
+  /// readback; submitFrame() then copies the slot into a pool frame. Falls
+  /// back to CPU readback when no DVP backend is present.
   bool prefersGpuDownload() const noexcept override;
   score::gfx::interop::PacedFramePump::Hooks pacingHooks() override;
 
-  /// Released by the completion callback (one permit per freed output slot).
-  std::counting_semaphore<64>& freeSlots() noexcept { return m_freeSlots; }
+  /// Driver-thread entry points, invoked by the completion callback.
+  void onFrameCompleted(IDeckLinkVideoFrame* frame) noexcept;
+  void onPlaybackStopped() noexcept;
 
 private:
   bool waitForTick();
   bool submitFrame(void* framePtr);
+  void startPlaybackIfPrerolled();
+  void drainPermits() noexcept;
 
   DeckLinkOutputSettings m_settings;
 
   ComPtr<IDeckLink> m_device;
   ComPtr<IDeckLinkOutput> m_output;
   ComPtr<IDeckLinkVideoOutputCallback> m_callback;
-  // Pinned host slot -> the DeckLink frame wrapping it (zero-copy, session-lived).
-  std::unordered_map<void*, ComPtr<IDeckLinkMutableVideoFrame>> m_frames;
+
+  // Completion-tracked frame pool. m_pool owns every frame for the session;
+  // m_free holds the subset not currently scheduled (non-owning). Guarded by
+  // m_poolMutex (pump thread pops, DeckLink's callback thread pushes).
+  std::mutex m_poolMutex;
+  std::vector<ComPtr<IDeckLinkMutableVideoFrame>> m_pool;
+  std::vector<IDeckLinkMutableVideoFrame*> m_free;
 
   int m_width{};
   int m_height{};
@@ -87,12 +104,22 @@ private:
   BMDTimeScale m_timeScale{60000};
 
   std::uint64_t m_frameCount{0}; ///< scheduled-frame display-time counter
-  int m_scheduled{0};
   bool m_started{false};
+  bool m_quiesced{false};
   bool m_open{false};
 
-  static constexpr int kPreroll = 3;
+  /// Frames the driver buffers before StartScheduledPlayback (samples gate on
+  /// GetBufferedVideoFrameCount >= preroll).
+  static constexpr uint32_t kPreroll = 3;
+  /// Pool depth: preroll + headroom so a burst never starves the free list.
+  static constexpr int kPoolSize = 5;
   std::counting_semaphore<64> m_freeSlots{0};
+
+  // quiesce() waits here for ScheduledPlaybackHasStopped, per the SDK
+  // samples' "recommended to wait before disabling output".
+  std::mutex m_stopMutex;
+  std::condition_variable m_stopCv;
+  bool m_playbackStopped{false};
 };
 
 } // namespace Gfx::DeckLink
