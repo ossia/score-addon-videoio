@@ -37,9 +37,13 @@ NTV2FrameBufferFormat toFBF(AJAInputPixelFormat fmt) noexcept
     case AJAInputPixelFormat::YCbCr10:
       return NTV2_FBF_10BIT_YCBCR;
     case AJAInputPixelFormat::ARGB:
-      return NTV2_FBF_ARGB;
+      return NTV2_FBF_ARGB; // memory [B,G,R,A] on LE
     case AJAInputPixelFormat::RGBA:
-      return NTV2_FBF_RGBA;
+      // NTV2_FBF_ABGR is the framestore whose memory really is [R,G,B,A] on
+      // LE (see ConvertARGBYCbCrToABGR in ntv2transcode.cpp). NTV2_FBF_RGBA
+      // stores [A,R,G,B] — retail name "ARGB-8" — and would swizzle every
+      // channel of the published frames.
+      return NTV2_FBF_ABGR;
   }
   return NTV2_FBF_8BIT_YCBCR;
 }

@@ -281,18 +281,19 @@ private:
       auto avFrame = m_queue.newFrame();
       const uint32_t frameSize = m_session.frameSize();
       // Hand the frame a pre-allocated, pre-pinned pool buffer (no per-frame
-      // alloc or page-pin). Falls back to a one-off allocated+locked buffer
-      // only if the pool is momentarily exhausted (renderer holding every
-      // buffer) or allocation failed.
+      // alloc or page-pin). Falls back to a one-off UNPINNED buffer if the
+      // pool is momentarily exhausted (renderer holding every buffer):
+      // AutoCirculateTransfer works on unpinned memory, just slower for this
+      // frame. Deliberately NOT DMABufferLock'ed — the buffer is freed with
+      // the AVFrame while the driver pin would persist until close()'s
+      // DMABufferUnlockAll, growing the kernel pin list with stale VAs on
+      // every pool miss (the exact leak the pool was built to avoid).
       uint8_t* storage = attachPinnedBuffer(*avFrame, frameSize);
       if(!storage)
       {
         storage = ::Video::initFrameBuffer(*avFrame, frameSize);
         if(!storage)
           continue;
-        card->DMABufferLock(
-            reinterpret_cast<const ULWord*>(storage),
-            static_cast<ULWord>(frameSize), /*inMap=*/true, /*inRDMA=*/false);
       }
 
       AUTOCIRCULATE_TRANSFER xfer;

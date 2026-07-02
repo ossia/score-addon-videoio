@@ -647,6 +647,13 @@ bool AjaOutputBackend::initializeAJADevice()
   // malformed 12G signal — the receiver then misdetects it (e.g. 1080p60a sent
   // as "1080p60b @ 30") and captures garbage. Setting both bits every time
   // makes output setup self-sufficient against stale card state.
+  // NOTE (review 2026-07, kept as-is deliberately): the demos program 12G
+  // differently — ntv2player4k touches only CH3 and only with link grouping;
+  // plain quad-link 3G leaves both bits off. This exact code (12G bit on all
+  // active spigots, incl. quad-link 4x1920x1080p) passed the full hardware
+  // round-trip on the Kona 5 rig, so it is NOT changed on review alone. If a
+  // third-party quad-link 3G receiver ever misparses the per-cable rate,
+  // restrict to `m_use12G || m_isQuadQuad` and re-run AJARoundtrip.
   const bool want12G = m_use12G || m_isQuadQuad || m_is4K;
   for(NTV2Channel ch : m_activeSDIs)
   {
@@ -786,6 +793,9 @@ bool AjaOutputBackend::initializeAJADevice()
   // these frames at the SDI clock; the VBI-paced AJAConsumerThread pushes
   // into the ring with AutoCirculateTransfer.
   m_card->AutoCirculateStop(m_channel);
+  // ntv2player waits a few VBIs after Stop before re-initialising ("Let it
+  // stop") so the Init doesn't land on a not-yet-idle channel.
+  m_card->WaitForOutputVerticalInterrupt(m_channel, 4);
   if(!m_card->AutoCirculateInitForOutput(
          m_channel,
          /*inFrameCount=*/kFrameCount,
@@ -794,7 +804,10 @@ bool AjaOutputBackend::initializeAJADevice()
          /*inNumChannels=*/1))
   {
     qWarning() << "AJA: AutoCirculateInitForOutput failed";
-    m_card.reset();
+    // Full teardown, like every other post-acquire failure path: dropping the
+    // card object alone would leave the device acquired by our (now dead)
+    // 'scor' claim and stuck in OEM task mode until manual recovery.
+    shutdownAJADevice();
     return false;
   }
 
@@ -875,6 +888,14 @@ void AjaOutputBackend::shutdownAJADevice()
   m_is4K = false;
   m_isQuadQuad = false;
   m_deviceInitialized = false;
+  // Per-session AutoCirculate state: each AutoCirculateInitForOutput needs
+  // its own AutoCirculateStart (the demos' start gate is a per-run local).
+  // Stale values here made a reopened backend never start circulation: the
+  // ring filled, CanAcceptMoreOutputFrames() went false and the pump blocked
+  // forever on a black output.
+  m_acStarted = false;
+  m_acGoodXfers = 0;
+  m_outputFrame = 0;
 }
 
 void AjaOutputBackend::buildSignalRoute(NTV2XptConnections& conns)

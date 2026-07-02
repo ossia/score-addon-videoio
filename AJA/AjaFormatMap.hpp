@@ -41,6 +41,7 @@ parseAjaVideoFormat(const QString& format, double /*rate*/) noexcept
       {"1080p60", NTV2_FORMAT_1080p_6000_A},
       {"1080i50", NTV2_FORMAT_1080i_5000},
       {"1080i5994", NTV2_FORMAT_1080i_5994},
+      {"1080i60", NTV2_FORMAT_1080i_6000},
       {"720p50", NTV2_FORMAT_720p_5000},
       {"720p5994", NTV2_FORMAT_720p_5994},
       {"720p60", NTV2_FORMAT_720p_6000},
@@ -142,8 +143,8 @@ ajaInputFormatTo(AJAInputPixelFormat fmt) noexcept
   {
     case AJAInputPixelFormat::YCbCr8:  return F::UYVY422;
     case AJAInputPixelFormat::YCbCr10: return F::V210;
-    case AJAInputPixelFormat::ARGB:    return F::BGRA8; // memory [B,G,R,A]
-    case AJAInputPixelFormat::RGBA:    return F::RGBA8; // memory [R,G,B,A]
+    case AJAInputPixelFormat::ARGB:    return F::BGRA8; // NTV2_FBF_ARGB: [B,G,R,A]
+    case AJAInputPixelFormat::RGBA:    return F::RGBA8; // NTV2_FBF_ABGR: [R,G,B,A]
   }
   return F::Unknown;
 }

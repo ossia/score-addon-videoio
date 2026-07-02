@@ -44,7 +44,8 @@ std::shared_ptr<::Video::ExternalInput> makeAJACapture(const AJAInputSettings&);
  *             bytes on the GPU. AVFrame staging not implemented for
  *             this format.
  *  - ARGB:    NTV2_FBF_ARGB         (32 bpp BGRA byte order on LE hosts).
- *  - RGBA:    NTV2_FBF_RGBA         (32 bpp RGBA byte order on LE hosts).
+ *  - RGBA:    NTV2_FBF_ABGR         (32 bpp RGBA byte order on LE hosts —
+ *             the SDK's NTV2_FBF_RGBA stores [A,R,G,B], not [R,G,B,A]).
  */
 enum class AJAInputPixelFormat
 {

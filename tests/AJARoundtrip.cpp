@@ -301,7 +301,7 @@ bool frameToRgba(const AVFrame* f, std::vector<uint8_t>& rgba)
           else if(f->format == AV_PIX_FMT_ARGB) { dst[0] = p[1]; dst[1] = p[2]; dst[2] = p[3]; }
           else { dst[0] = p[3]; dst[1] = p[2]; dst[2] = p[1]; } // ABGR
           dst[3] = 255;
-          dst += 0;
+          dst += 4;
         }
       }
       return true;
