@@ -207,10 +207,15 @@ void VideoInputProtocolFactory::serializeProtocolSpecificSettings(
 bool VideoInputProtocolFactory::checkCompatibility(
     const Device::DeviceSettings& a, const Device::DeviceSettings& b) const noexcept
 {
+  // "Can a and b coexist?" — the device explorer also probes against an empty
+  // DeviceSettings{} (null protocol), which must always be compatible.
+  if(a.protocol != b.protocol)
+    return true;
   auto sa = a.deviceSpecificSettings.value<VideoInputSettings>();
   auto sb = b.deviceSpecificSettings.value<VideoInputSettings>();
-  return sa.vendor == sb.vendor && sa.deviceIndex == sb.deviceIndex
-         && sa.channelIndex == sb.channelIndex;
+  // Only one input device may own a given physical card at a time (the
+  // backends acquire the whole board, e.g. AcquireStreamForApplication).
+  return !(sa.vendor == sb.vendor && sa.deviceIndex == sb.deviceIndex);
 }
 
 // =============================================================================

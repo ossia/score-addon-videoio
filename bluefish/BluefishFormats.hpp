@@ -46,7 +46,9 @@ inline BLUE_U32 videoModeExtFromTokenBlue(const QString& f) noexcept
 }
 
 /// Pixel-format token -> EMemoryFormat. Defaults to 8-bit YUV 4:2:2 (YUVS/BV8).
-///   YCbCr8  -> MEM_FMT_YUVS (== MEM_FMT_BV8), on-wire UYVY422
+///   YCbCr8  -> MEM_FMT_YUVS (== MEM_FMT_BV8), memory Y0 Cb Y1 Cr = YUY2/YUYV
+///              (UYVY is the *separate* MEM_FMT_2VUY — see the SDK's
+///               InitBufferYUVS vs InitBuffer2VUY in SampleCodeUtils.h)
 ///   YCbCr10 -> MEM_FMT_V210,                  on-wire V210
 ///   RGBA    -> MEM_FMT_RGBA,                  on-wire RGBA8
 ///   RGB8    -> MEM_FMT_ARGB_PC (== MEM_FMT_BGRA), on-wire BGRA8 (UI "BGRA 8-bit")
@@ -66,10 +68,11 @@ neutralFromMemFmt(BLUE_U32 memFmt) noexcept
   switch(memFmt)
   {
     case MEM_FMT_V210:    return F::V210;
-    case MEM_FMT_YUVS:    return F::UYVY422; // MEM_FMT_BV8 aliases MEM_FMT_YUVS
+    case MEM_FMT_YUVS:    return F::YUYV422; // YUVS/BV8 is Y0 Cb Y1 Cr (YUY2), NOT UYVY
+    case MEM_FMT_2VUY:    return F::UYVY422;
     case MEM_FMT_RGBA:    return F::RGBA8;
     case MEM_FMT_ARGB_PC: return F::BGRA8;   // MEM_FMT_BGRA aliases MEM_FMT_ARGB_PC
-    default:              return F::UYVY422;
+    default:              return F::YUYV422;
   }
 }
 

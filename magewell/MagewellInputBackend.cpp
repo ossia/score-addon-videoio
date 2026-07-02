@@ -254,7 +254,10 @@ void MagewellInputBackend::runLoop()
            m_stride, FALSE, (MWCAP_PTR64)0, m_settings.fourcc, m_width, m_height,
            /*dwProcessSwitchs*/ 0, /*cyParitalNotify*/ 0,
            /*hOSDImage*/ (HOSD)0, /*pOSDRects*/ nullptr, /*cOSDRects*/ 0,
-           /*sContrast*/ 0, /*sBrightness*/ 0, /*sSaturation*/ 0, /*sHue*/ 0,
+           // Neutral processing amplitudes per the SDK ranges: contrast
+           // [50,200] and saturation [0,200] are scaled around 100 = identity
+           // (0 would clamp contrast and fully desaturate every frame).
+           /*sContrast*/ 100, /*sBrightness*/ 0, /*sSaturation*/ 100, /*sHue*/ 0,
            MWCAP_VIDEO_DEINTERLACE_WEAVE, MWCAP_VIDEO_ASPECT_RATIO_IGNORE,
            /*pRectSrc*/ nullptr, /*pRectDest*/ nullptr,
            /*nAspectX*/ 0, /*nAspectY*/ 0, csc,

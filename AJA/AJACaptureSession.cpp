@@ -184,6 +184,33 @@ NTV2VideoFormat promote4KTo8K(NTV2VideoFormat fourK)
   }
 }
 
+/// True iff the three SDI inputs following `master` all carry the same
+/// signal as `detected` — the precondition for treating four cables as one
+/// quad-link group. Mirrors ntv2framegrabber's 4K check (it promotes via
+/// Get4KInputFormat only when GetInputVideoFormat of inputs n+1..n+3 all
+/// match input n). A single camera on one cable must NOT be promoted: with
+/// nothing (or unrelated signals) on the other spigots this returns false
+/// and Auto stays single-link. Bidirectional spigots still in transmit
+/// mode report NTV2_FORMAT_UNKNOWN, which also (correctly) vetoes the
+/// promotion — the explicit Quad4K/Quad8K modes remain the way to force a
+/// quad group on such wiring.
+bool quadLinkSiblingsAgree(
+    CNTV2Card& card, NTV2Channel master, NTV2VideoFormat detected)
+{
+  for(int i = 1; i <= 3; ++i)
+  {
+    const auto ch = static_cast<NTV2Channel>(master + i);
+    if(ch >= NTV2_MAX_NUM_CHANNELS)
+      return false;
+    const NTV2InputSource src = ::NTV2ChannelToInputSource(ch, NTV2_IOKINDS_SDI);
+    if(!card.features().CanDoInputSource(src))
+      return false;
+    if(card.GetInputVideoFormat(src) != detected)
+      return false;
+  }
+  return true;
+}
+
 /// True iff the format is a single-link 4K signal (one SDI cable
 /// carries the whole frame, e.g., 12G or 6G), as opposed to a
 /// quad-link 4K signal (four 3G cables carry one quadrant each).
@@ -443,17 +470,19 @@ bool CaptureSession::setupChannel()
   }
 
   // Promote per resolution mode. See enum doc in AJAInput.hpp.
+  // Auto keeps whatever arrives on the master cable as-is (a 12G 4K signal
+  // is already complete on one link); it only widens to a quad-link group
+  // when SDI n+1..n+3 demonstrably carry the same signal, like the SDK's
+  // ntv2framegrabber 4K check. A lone 1080p camera stays single-link.
   NTV2VideoFormat promoted = detected;
   AJAInputResolutionMode mode = m_settings.resolutionMode;
   if(mode == AJAInputResolutionMode::Auto)
   {
     if(NTV2_IS_QUAD_QUAD_FORMAT(detected) || NTV2_IS_4K_VIDEO_FORMAT(detected))
       promoted = detected;
-    else if(NTV2VideoFormat eightK = promote4KTo8K(detected);
-            eightK != NTV2_FORMAT_UNKNOWN)
-      promoted = eightK;
     else if(NTV2VideoFormat fourK = promoteHDTo4K(detected);
-            fourK != NTV2_FORMAT_UNKNOWN)
+            fourK != NTV2_FORMAT_UNKNOWN
+            && quadLinkSiblingsAgree(*m_card, m_masterChannel, detected))
       promoted = fourK;
   }
   else if(mode == AJAInputResolutionMode::Quad8K)
@@ -730,13 +759,13 @@ bool CaptureSession::detectAndApplyFormatChange()
   }
   else if(mode == AJAInputResolutionMode::Auto)
   {
+    // Same rule as setupChannel(): only widen to quad-link when all four
+    // inputs agree; a single-cable signal (incl. 12G 4K) stays as detected.
     if(NTV2_IS_QUAD_QUAD_FORMAT(now) || NTV2_IS_4K_VIDEO_FORMAT(now))
       promoted = now;
-    else if(NTV2VideoFormat eightK = promote4KTo8K(now);
-            eightK != NTV2_FORMAT_UNKNOWN)
-      promoted = eightK;
     else if(NTV2VideoFormat fourK = promoteHDTo4K(now);
-            fourK != NTV2_FORMAT_UNKNOWN)
+            fourK != NTV2_FORMAT_UNKNOWN
+            && quadLinkSiblingsAgree(*m_card, m_masterChannel, now))
       promoted = fourK;
   }
 
