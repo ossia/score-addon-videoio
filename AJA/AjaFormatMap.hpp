@@ -165,7 +165,7 @@ ntv2FormatTo(NTV2FrameBufferFormat fmt) noexcept
     case NTV2_FBF_ARGB:                  return F::BGRA8; // memory [B,G,R,A]
     case NTV2_FBF_RGBA:                  return F::ARGB8; // memory [A,R,G,B]
     case NTV2_FBF_ABGR:                  return F::RGBA8; // memory [R,G,B,A]
-    case NTV2_FBF_10BIT_RGB:             return F::R210;
+    case NTV2_FBF_10BIT_RGB:             return F::RGB10; // AJA LE (not DeckLink r210 BE)
     case NTV2_FBF_10BIT_ARGB:            return F::ARGB10;
     case NTV2_FBF_10BIT_DPX:             return F::DPX10;
     case NTV2_FBF_10BIT_DPX_LE:          return F::DPX10LE;
