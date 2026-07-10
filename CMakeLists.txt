@@ -370,4 +370,13 @@ if(SCORE_VIDEOIO_BUILD_TESTS AND VIDEOIO_HAS_AJA)
   target_include_directories(aja_rgb_repro PRIVATE
     "${VIDEOIO_AJA_SDK_ROOT}/ajantv2/includes" "${VIDEOIO_AJA_SDK_ROOT}")
   target_link_libraries(aja_rgb_repro PRIVATE ajantv2)
+
+  # SDK-only HDMI monitor-output validation probe. The Kona 5 has no HDMI
+  # input on any personality, so this validates the TX side per mode
+  # (framestore -> HDMI out routing + live NTV2HDMIOutputStatus readback);
+  # --force-hpd brings the TX up without an EDID sink.
+  add_executable(aja_hdmi_out_probe tests/AJAHdmiOutProbe.cpp)
+  target_include_directories(aja_hdmi_out_probe PRIVATE
+    "${VIDEOIO_AJA_SDK_ROOT}/ajantv2/includes" "${VIDEOIO_AJA_SDK_ROOT}")
+  target_link_libraries(aja_hdmi_out_probe PRIVATE ajantv2)
 endif()
