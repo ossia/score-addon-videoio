@@ -4,6 +4,7 @@
 
 #include <Gfx/Graph/DirectVideoOutputBackend.hpp>
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -75,6 +76,11 @@ public:
   /// Driver-thread entry points, invoked by the completion callback.
   void onFrameCompleted(IDeckLinkVideoFrame* frame) noexcept;
   void onPlaybackStopped() noexcept;
+  /// Count a late/dropped completion; returns the new total (for sampled logs).
+  std::uint64_t noteLateCompletion() noexcept
+  {
+    return m_lateCompletions.fetch_add(1, std::memory_order_relaxed) + 1;
+  }
 
 private:
   bool waitForTick();
@@ -104,6 +110,8 @@ private:
   BMDTimeScale m_timeScale{60000};
 
   std::uint64_t m_frameCount{0}; ///< scheduled-frame display-time counter
+  std::uint64_t m_lateResyncs{0}; ///< frames skipped catching the clock up
+  std::atomic<std::uint64_t> m_lateCompletions{0};
   bool m_started{false};
   bool m_quiesced{false};
   bool m_open{false};
