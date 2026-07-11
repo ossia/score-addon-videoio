@@ -29,4 +29,11 @@ bool ensureMwInit() noexcept;
 SCORE_ADDON_VIDEOIO_EXPORT
 std::vector<DeviceInfo> enumerateDevices();
 
+/// True iff channel `index` currently has a LOCKED incoming video signal.
+/// Cheap open→query→close probe; used by harnesses to distinguish
+/// "no cable / no source" (skip) from "signal present but capture broken"
+/// (fail) before running the full graph.
+SCORE_ADDON_VIDEOIO_EXPORT
+bool signalLocked(int index) noexcept;
+
 } // namespace Gfx::Magewell

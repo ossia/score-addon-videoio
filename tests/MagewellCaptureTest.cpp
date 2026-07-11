@@ -273,6 +273,18 @@ int main(int argc, char** argv)
   for(const auto& c : p.value(chans).split(',', Qt::SkipEmptyParts))
   {
     const int ch = c.toInt();
+    // No cable / no source is a SKIP, not a FAIL: the card synthesizes black
+    // frames for unlocked inputs, which would otherwise score FAIL(black).
+    if(!signalLocked(ch))
+    {
+      std::printf("[ channel %d ] no signal, skipping\n", ch);
+      std::fflush(stdout);
+      ChannelResult r;
+      r.channel = ch;
+      r.status = "SKIP(no-signal)";
+      rows.push_back(r);
+      continue;
+    }
     std::printf("[ channel %d ] capturing %.1fs ...\n", ch, p.value(secs).toDouble());
     std::fflush(stdout);
     rows.push_back(runChannel(
