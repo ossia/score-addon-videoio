@@ -97,6 +97,10 @@ public:
 
   static constexpr uint16_t kFrameCount{7}; // AJA-recommended AC depth
 
+  /// Resolved max in-flight AutoCirculate output frames (see cardCanAccept).
+  /// -1 until first computed; precedence env > user setting > default(2).
+  int m_maxQueuedDepth{-1};
+
   /// Pre-built HDR Static Metadata Descriptor ANC packet (page-aligned).
   /// Empty unless settings.hdrMode != Off.
   std::vector<uint32_t> m_hdrAncBuffer;

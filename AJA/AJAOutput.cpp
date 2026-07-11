@@ -265,6 +265,22 @@ AJASettingsWidget::AJASettingsWidget(QWidget* parent)
       "inserted as ANC packets (SDI)."));
   m_layout->addRow(tr("HDR"), m_hdrModeCombo);
 
+  m_outputRingDepth = new QSpinBox(this);
+  // 0 == "Auto": the AutoCirculate ring holds up to 7 frames, but the pump
+  // caps in-flight depth at 2 by default for lowest latency. Explicit 1..7
+  // lets the user trade latency for drop-safety: each extra queued frame adds
+  // one frame period of end-to-end latency (16.7 ms @ 60p, 40 ms @ 25p) but
+  // absorbs that much more host-side jitter before the card underruns.
+  m_outputRingDepth->setRange(0, 7);
+  m_outputRingDepth->setValue(0);
+  m_outputRingDepth->setSpecialValueText(tr("Auto (2 frames)"));
+  m_outputRingDepth->setToolTip(tr(
+      "Max in-flight output frames queued to the card's AutoCirculate ring.\n"
+      "Auto (2) gives the lowest latency. Higher values add one frame period "
+      "of latency each (16.7 ms at 60p, 40 ms at 25p) but tolerate more host "
+      "jitter before dropping. Overridden by the SCORE_AJA_OUT_DEPTH env var."));
+  m_layout->addRow(tr("Output Ring Depth"), m_outputRingDepth);
+
   m_rdmaCheckbox = new QCheckBox(tr("Enable GPUDirect RDMA"), this);
   m_rdmaCheckbox->setChecked(true);
   m_rdmaCheckbox->setToolTip(tr("Use GPU direct memory access for lower latency (requires NVIDIA GPU)"));
@@ -303,6 +319,7 @@ Device::DeviceSettings AJASettingsWidget::getSettings() const
   aja.height = m_height->value();
   aja.rate = m_rate->value();
   aja.useRDMA = m_rdmaCheckbox->isChecked();
+  aja.outputRingDepth = m_outputRingDepth->value();
   aja.mode8K = static_cast<AJA8KMode>(m_8kModeCombo->currentData().toInt());
   aja.hdrMode = static_cast<AJAHDRMode>(m_hdrModeCombo->currentData().toInt());
 
@@ -339,6 +356,7 @@ void AJASettingsWidget::setSettings(const Device::DeviceSettings& settings)
   m_width->setValue(aja.width);
   m_height->setValue(aja.height);
   m_rate->setValue(static_cast<int>(aja.rate));
+  m_outputRingDepth->setValue(aja.outputRingDepth);
   m_rdmaCheckbox->setChecked(aja.useRDMA);
 
   // Find and select 8K mode
@@ -561,7 +579,8 @@ void DataStreamReader::read(const Gfx::AJA::AJAOutputSettings& n)
 {
   m_stream << n.deviceName << n.deviceIndex << n.channelIndex << n.width << n.height
            << n.rate << n.videoFormat << n.pixelFormat << n.useRDMA
-           << static_cast<int>(n.mode8K) << static_cast<int>(n.hdrMode);
+           << static_cast<int>(n.mode8K) << static_cast<int>(n.hdrMode)
+           << n.outputRingDepth;
   insertDelimiter();
 }
 
@@ -571,7 +590,8 @@ void DataStreamWriter::write(Gfx::AJA::AJAOutputSettings& n)
   int mode8K = 0;
   int hdrMode = 0;
   m_stream >> n.deviceName >> n.deviceIndex >> n.channelIndex >> n.width >> n.height
-      >> n.rate >> n.videoFormat >> n.pixelFormat >> n.useRDMA >> mode8K >> hdrMode;
+      >> n.rate >> n.videoFormat >> n.pixelFormat >> n.useRDMA >> mode8K >> hdrMode
+      >> n.outputRingDepth;
   n.mode8K = static_cast<Gfx::AJA::AJA8KMode>(mode8K);
   n.hdrMode = static_cast<Gfx::AJA::AJAHDRMode>(hdrMode);
   checkDelimiter();
@@ -591,6 +611,7 @@ void JSONReader::read(const Gfx::AJA::AJAOutputSettings& n)
   obj["UseRDMA"] = n.useRDMA;
   obj["Mode8K"] = static_cast<int>(n.mode8K);
   obj["HDRMode"] = static_cast<int>(n.hdrMode);
+  obj["OutputRingDepth"] = n.outputRingDepth;
 }
 
 template <>
@@ -607,6 +628,12 @@ void JSONWriter::write(Gfx::AJA::AJAOutputSettings& n)
   n.useRDMA = obj["UseRDMA"].toBool();
   n.mode8K = static_cast<Gfx::AJA::AJA8KMode>(obj["Mode8K"].toInt());
   n.hdrMode = static_cast<Gfx::AJA::AJAHDRMode>(obj["HDRMode"].toInt());
+  // Absent in projects saved before this field existed => 0 (auto), preserving
+  // the prior fixed depth-2 behavior.
+  if(auto it = obj.tryGet("OutputRingDepth"))
+    n.outputRingDepth = it->toInt();
+  else
+    n.outputRingDepth = 0;
 }
 
 SCORE_SERALIZE_DATASTREAM_DEFINE(Gfx::AJA::AJAOutputSettings);

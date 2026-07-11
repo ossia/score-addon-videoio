@@ -308,14 +308,27 @@ bool AjaOutputBackend::cardCanAccept()
   // frames of end-to-end latency for nothing — 2 queued frames already
   // sustain rate (transfer completes well inside a frame period), and each
   // extra queued frame costs a full frame period of end-to-end latency
-  // (16.7 ms at 60p, 40 ms at 25p). SCORE_AJA_OUT_DEPTH overrides for
-  // experiments; floor of 2 keeps one frame of jitter headroom.
-  static const int kMaxQueued = [] {
+  // (16.7 ms at 60p, 40 ms at 25p) in exchange for that much more host-jitter
+  // headroom before the card underruns.
+  //
+  // Precedence (highest first):
+  //   1. SCORE_AJA_OUT_DEPTH env var  — debug override, floored at 2
+  //   2. AJAOutputSettings::outputRingDepth (> 0) — user-facing setting,
+  //      clamped to [1, kFrameCount]
+  //   3. default of 2 — the auto / lowest-latency behavior (setting == 0),
+  //      keeping one frame of jitter headroom so existing projects are unchanged
+  // Resolved once per backend instance (settings are fixed for a session).
+  if(m_maxQueuedDepth < 0)
+  {
     if(const char* v = std::getenv("SCORE_AJA_OUT_DEPTH"); v && *v)
-      return std::max(2, std::atoi(v));
-    return 2;
-  }();
-  if(m_acStarted && status.GetBufferLevel() >= kMaxQueued)
+      m_maxQueuedDepth = std::max(2, std::atoi(v));
+    else if(m_settings.outputRingDepth > 0)
+      m_maxQueuedDepth
+          = std::clamp(m_settings.outputRingDepth, 1, int(kFrameCount));
+    else
+      m_maxQueuedDepth = 2;
+  }
+  if(m_acStarted && status.GetBufferLevel() >= m_maxQueuedDepth)
     return false;
   return true;
 }

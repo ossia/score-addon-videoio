@@ -495,6 +495,7 @@ struct Options
   bool listOnly = false;
   bool benchUpload = false; // card-free upload microbenchmark, then exit
   bool vkInteropProbe = false; // Vulkan<->CUDA external-memory probe, then exit
+  int outDepth = 0; // AJAOutputSettings::outputRingDepth (0 = auto/default 2)
 };
 
 AJAHDRMode parseHdr(const std::string& s)
@@ -889,6 +890,9 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
   outS.mode8K = vf.eightK ? (eightKSquares ? AJA8KMode::Squares : AJA8KMode::TSI)
                           : AJA8KMode::Disabled;
   outS.hdrMode = opt.hdr;
+  // A/B the user-facing depth setting through the exact same plumbing the GUI
+  // uses (0 = auto). SCORE_AJA_OUT_DEPTH env still overrides this if set.
+  outS.outputRingDepth = opt.outDepth;
 
   // Test source. Default: GPU-generated pattern (fragment pass driven by
   // the frame-index uniform) — the producer stays shader-based at every
@@ -1616,9 +1620,16 @@ Options parseOptions()
       "vk-interop-probe",
       "Card-free Vulkan<->CUDA external-memory probe (zero-copy capture "
       "foundation), then exit");
+  QCommandLineOption outDepthOpt(
+      "out-depth",
+      "Max in-flight AutoCirculate output frames (0 = auto/default 2; 1..7 "
+      "explicit). Higher = more latency, more drop-safety. A/B latency without "
+      "the SCORE_AJA_OUT_DEPTH env var.",
+      "n", "0");
   p.addOptions(
       {outDev, inDev, outCh, inCh, secs, fmts, pfs, iop, dump, rx, texgenOpt,
-       apiOpt, eightKModeOpt, allFmt, hdrOpt, list, benchUp, vkProbe});
+       apiOpt, eightKModeOpt, allFmt, hdrOpt, list, benchUp, vkProbe,
+       outDepthOpt});
   p.process(*qApp);
 
   o.outDevice = p.value(outDev).toInt();
@@ -1651,6 +1662,7 @@ Options parseOptions()
   o.hdr = parseHdr(p.value(hdrOpt).toStdString());
   o.benchUpload = p.isSet(benchUp);
   o.vkInteropProbe = p.isSet(vkProbe);
+  o.outDepth = p.value(outDepthOpt).toInt();
   return o;
 }
 
