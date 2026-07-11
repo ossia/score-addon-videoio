@@ -116,7 +116,7 @@ struct ChannelResult
 
 ChannelResult runChannel(
     int channel, double seconds, bool expectGradient,
-    const std::string& dumpPrefix)
+    const std::string& dumpPrefix, score::gfx::GraphicsApi api)
 {
   ChannelResult r;
   r.channel = channel;
@@ -133,7 +133,7 @@ ChannelResult runChannel(
   graph->addNode(bg);
   graph->addEdge(
       in->output[0], bg->input[0], Process::CableType::ImmediateGlutton);
-  graph->createAllRenderLists(score::gfx::GraphicsApi::OpenGL);
+  graph->createAllRenderLists(api);
 
   if(!bg->canRender())
   {
@@ -253,7 +253,9 @@ int main(int argc, char** argv)
       "expect", "Content check: any | aja-gradient", "what", "any");
   QCommandLineOption dump("dump", "Save first frame per channel", "prefix");
   QCommandLineOption list("list", "List channels and exit");
-  p.addOptions({chans, secs, expect, dump, list});
+  QCommandLineOption apiOpt(
+      "api", "Render backend: opengl | vulkan", "api", "opengl");
+  p.addOptions({chans, secs, expect, dump, list, apiOpt});
   p.addHelpOption();
   p.process(*qApp);
 
@@ -274,7 +276,9 @@ int main(int argc, char** argv)
     std::printf("[ channel %d ] capturing %.1fs ...\n", ch, p.value(secs).toDouble());
     std::fflush(stdout);
     rows.push_back(runChannel(
-        ch, p.value(secs).toDouble(), gradient, p.value(dump).toStdString()));
+        ch, p.value(secs).toDouble(), gradient, p.value(dump).toStdString(),
+        p.value(apiOpt) == "vulkan" ? score::gfx::GraphicsApi::Vulkan
+                                    : score::gfx::GraphicsApi::OpenGL));
   }
 
   std::printf(
