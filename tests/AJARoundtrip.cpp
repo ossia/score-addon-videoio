@@ -604,6 +604,16 @@ int idxFromRgba(const uint8_t* rgba, int w, int h)
          | (unlvl(uint8_t(sb / n)) << 4);
 }
 
+// SCORE_AJA_NO_VERIFY=1: the consumer only dequeues + counts, skipping the
+// per-frame band decode and 1-in-8 CPU swscale RGBA + PSNR. Isolates the true
+// consumer dequeue cadence (what a real GPU-decode renderer would sustain)
+// from the harness's CPU verification cost.
+inline bool noVerifyMode()
+{
+  static const bool v = std::getenv("SCORE_AJA_NO_VERIFY") != nullptr;
+  return v;
+}
+
 // ---------------------------------------------------------------------------
 // Shared per-cell verification: continuity / drops / latency + sampled PSNR.
 // ---------------------------------------------------------------------------
@@ -734,6 +744,12 @@ struct Receiver
       }
       const int64_t recvNs = nowNs();
       m.lastTrc.store(f->color_trc, std::memory_order_relaxed); // HDR detect
+      if(noVerifyMode())
+      {
+        m.frames.fetch_add(1, std::memory_order_relaxed); // dequeue cadence only
+        input->release_frame(f);
+        continue;
+      }
       const int idx = recoverIndexRaw(f); // cheap per-frame band decode
       if(idx < 0)
         unsupportedFmt = true;

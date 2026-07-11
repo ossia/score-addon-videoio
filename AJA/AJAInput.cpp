@@ -26,6 +26,8 @@ extern "C" {
 
 #include <QComboBox>
 #include <QDebug>
+
+#include <cstdlib>
 #include <QFormLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -140,6 +142,29 @@ public:
       return;
     if(m_thread.joinable())
       m_thread.join();
+    // Ground-truth AVFrame-path capture cadence: goodXfers = frames actually
+    // DMA'd off the card into the queue; the card's acFramesProcessed is the
+    // driver's view. Separates true capture throughput from the downstream
+    // consumer's dequeue rate. SCORE_AJA_ACSTATS=1.
+    if(std::getenv("SCORE_AJA_ACSTATS"))
+    {
+      ULWord proc = 0, drop = 0;
+      if(auto* card = m_session.card())
+      {
+        AUTOCIRCULATE_STATUS st;
+        if(card->AutoCirculateGetStatus(m_session.masterChannel(), st))
+        {
+          proc = st.GetProcessedFrameCount();
+          drop = st.GetDroppedFrameCount();
+        }
+      }
+      qDebug().nospace()
+          << "AJA-ACSTATS in(cpu): card.processed=" << proc
+          << " card.dropped=" << drop
+          << " goodXfers=" << m_goodXfers.load()
+          << " qDrops=" << m_drops.load()
+          << " xferFails=" << m_xferFails.load();
+    }
     m_queue.drain();
   }
 
