@@ -5,6 +5,7 @@
 #include <Gfx/Graph/interop/GpuDirectCaptureStrategy.hpp>
 #include <Gfx/Graph/interop/CudaP2PBridge.h>
 #include <Gfx/Graph/interop/GpuRingBuffer.hpp>
+#include <Gfx/Graph/interop/StageProfiler.hpp>
 
 #include <ntv2card.h>
 
@@ -82,6 +83,20 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
   // pull and consume. Shared with CaptureInteropCpu via GLCaptureUpload.hpp.
   score::gfx::interop::CaptureSlotPublisher m_publisher;
 
+  // Option (a): register the decoder's RGBA8 input texture with CUDA and
+  // cuMemcpy2D the bounce straight into its level-0 array — collapsing the
+  // two render-thread VRAM copies (DtoD→SSBO + glTexSubImage2D upload) into a
+  // single DtoD→texture-array. Non-null when engaged; when the register fails
+  // at init we leave it null and fall back to the SSBO-ring (m_ring) path.
+  CudaP2PResourceHandle m_texRes{};
+  bool m_imageInterop{false};
+  int m_texW{}, m_texH{};
+  std::uint32_t m_rowBytes{};
+
+  // Per-stage render-thread copy timing (SCORE_AJA_PROFILE=1).
+  score::gfx::interop::StageProfiler m_profImage{"aja-gl-t3 copy(image)"};
+  score::gfx::interop::StageProfiler m_profBuffer{"aja-gl-t3 copy(buf+pbo)"};
+
   const char* name() const noexcept override { return "RDMA-GL/T3"; }
 
   bool init(const score::gfx::interop::GpuDirectCaptureStrategyConfig& c) override
@@ -124,22 +139,11 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
       return false;
     }
 
-    score::gfx::interop::GpuRingBufferConfig rcfg{
-        cfg.rhi, m_cudaCtx, cfg.frameByteSize,
-        static_cast<int>(m_slotCount), "AJA-RDMA-GL-Capture",
-        /*glRegisterOnly=*/true};
-    if(!m_ring.create(rcfg))
-    {
-      qWarning() << "AJA RDMA-IN(GL/T3): GpuRingBuffer::create failed";
-      release();
-      return false;
-    }
-
+    // CUDA-owned bounces are the AJA P2P-DMA targets in BOTH paths (option (a)
+    // image-interop and the SSBO+PBO fallback both DMA into these first —
+    // inRDMA=true only pins CUDA-allocator memory, never GL-owned memory).
     for(std::size_t i = 0; i < m_slotCount; ++i)
     {
-      // GPUDirect P2P: AJA's AC DMAs the captured frame straight into a
-      // CUDA-owned bounce buffer (inRDMA=true only pins CUDA-allocator
-      // memory — never the ring's GL-owned buffers).
       if(cuda_p2p_alloc_buffer(m_cudaCtx, cfg.frameByteSize, &m_bounce[i])
              != CUDA_P2P_SUCCESS
          || !m_bounce[i])
@@ -158,6 +162,59 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
       }
       m_dmaLocked[i] = true;
     }
+
+    // Row geometry for the pitched bounce → texture-array blit. The bounce is
+    // tightly packed (frameByteSize == width*4*height, validated above), so
+    // src pitch == row width == texW*4.
+    {
+      const QSize sz = cfg.outputTexture->pixelSize();
+      m_texW = sz.width();
+      m_texH = sz.height();
+      m_rowBytes = std::uint32_t(m_texW) * 4u;
+    }
+
+    // Option (a): register the decoder's RGBA8 input texture with CUDA. On
+    // success we memcpy2D bounce → its array on the render thread — one copy,
+    // no SSBO staging, no glTexSubImage2D. If the register fails (driver lacks
+    // the symbols, or the QRhi texture isn't CUDA-registrable) we fall through
+    // to the proven SSBO-ring + glTexSubImage2D path — no regression.
+    // SCORE_AJA_GL_NO_IMAGE_INTEROP=1 forces the SSBO+PBO fallback (for A/B
+    // profiling and as an escape hatch if a driver mishandles the image path).
+    const bool tryImage
+        = !qEnvironmentVariableIsSet("SCORE_AJA_GL_NO_IMAGE_INTEROP");
+    if(const auto nt = cfg.outputTexture->nativeTexture();
+       tryImage && nt.object)
+    {
+      const auto glTex = static_cast<std::uint32_t>(nt.object);
+      if(cuda_p2p_register_gl_image(m_cudaCtx, glTex, GL_TEXTURE_2D, &m_texRes)
+             == CUDA_P2P_SUCCESS
+         && m_texRes)
+      {
+        m_imageInterop = true;
+        qDebug() << "AJA RDMA-IN(GL/T3): engaged image-interop path "
+                    "(cuGraphicsGLRegisterImage) — single render-thread copy";
+      }
+      else
+      {
+        qDebug() << "AJA RDMA-IN(GL/T3): image-interop register failed ("
+                 << cuda_p2p_get_error_string(m_cudaCtx)
+                 << "); falling back to SSBO+PBO path";
+      }
+    }
+
+    if(!m_imageInterop)
+    {
+      score::gfx::interop::GpuRingBufferConfig rcfg{
+          cfg.rhi, m_cudaCtx, cfg.frameByteSize,
+          static_cast<int>(m_slotCount), "AJA-RDMA-GL-Capture",
+          /*glRegisterOnly=*/true};
+      if(!m_ring.create(rcfg))
+      {
+        qWarning() << "AJA RDMA-IN(GL/T3): GpuRingBuffer::create failed";
+        release();
+        return false;
+      }
+    }
     return true;
   }
 
@@ -172,6 +229,10 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
         cuda_p2p_free_buffer(m_cudaCtx, m_bounce[i]);
       m_bounce[i] = nullptr;
     }
+    if(m_texRes && m_cudaCtx)
+      cuda_p2p_release_buffer(m_cudaCtx, m_texRes);
+    m_texRes = nullptr;
+    m_imageInterop = false;
     m_ring.destroy();
     if(m_cudaCtx)
       cuda_p2p_shutdown(m_cudaCtx);
@@ -182,6 +243,9 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
 
   std::size_t slotCount() const noexcept override
   {
+    // With image-interop there is no SSBO ring; the bounce ring is the depth.
+    if(m_imageInterop)
+      return m_slotCount;
     return m_ring.valid() ? m_ring.slotCount() : 0;
   }
 
@@ -198,7 +262,7 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
   {
     // No copy needed on the capture thread: AJA P2P-wrote straight into
     // GPU VRAM. Publish the slot to the renderer.
-    if(i >= m_ring.slotCount())
+    if(i >= slotCount())
       return false;
     m_publisher.publish(i);
     return true;
@@ -214,7 +278,34 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
     if(!m_glCtx)
       return;
     const int slotIdx = m_publisher.consume();
-    if(slotIdx < 0 || static_cast<std::size_t>(slotIdx) >= m_ring.slotCount())
+    if(slotIdx < 0 || static_cast<std::size_t>(slotIdx) >= m_slotCount)
+      return;
+    void* bounce = m_bounce[static_cast<std::size_t>(slotIdx)];
+    if(!bounce)
+      return;
+
+    if(m_imageInterop)
+    {
+      // Option (a): ONE bounce → decoder-texture-array VRAM copy. cuMemcpy2D
+      // into the registered texture's level-0 array, map/unmap per frame (the
+      // unmap makes the CUDA write visible to the subsequent GL sample — the
+      // same coherency discipline the buffer path relied on). No SSBO staging,
+      // no glTexSubImage2D upload.
+      score::gfx::interop::StageProfiler::Scope prof{m_profImage};
+      if(cuda_p2p_gl_write_image(
+             m_cudaCtx, m_texRes, bounce, m_rowBytes, std::uint32_t(m_texH),
+             m_rowBytes)
+         != CUDA_P2P_SUCCESS)
+      {
+        qWarning() << "AJA RDMA-IN(GL/T3): image write failed:"
+                   << cuda_p2p_get_error_string(m_cudaCtx);
+      }
+      return;
+    }
+
+    // ---- Fallback: SSBO ring + glTexSubImage2D (two render-thread copies) ----
+    score::gfx::interop::StageProfiler::Scope prof{m_profBuffer};
+    if(static_cast<std::size_t>(slotIdx) >= m_ring.slotCount())
       return;
 
     // Extract the slot's native GL buffer name (the P2P DMA target). The
