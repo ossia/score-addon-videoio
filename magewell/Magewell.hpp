@@ -70,22 +70,20 @@ inline unsigned char* mwBufferAddress(unsigned char* p) noexcept
 // WinTypes.h defines the Win32 scalar look-alikes as MACROS (BOOL, CHAR,
 // TRUE, ...). Left defined, they poison every identifier of the same name in
 // downstream headers (ossia's val_type enum has BOOL/CHAR/FLOAT members).
-// The SDK prototypes above are already parsed, so undefine them all; our own
-// code uses plain C++ types instead.
+// The SDK prototypes above are already parsed, so undefine the poisonous
+// ones; our own code uses plain C++ types instead. DWORD/BYTE/WORD must STAY
+// defined — the MWFOURCC_* constants expand through them at every use site.
 #undef HANDLE
 #undef RECT
 #undef PRECT
 #undef LPRECT
-#undef BYTE
 #undef CHAR
-#undef WORD
 #undef SHORT
 #undef INT
 #undef FLOAT
 #undef LONG
 #undef LONGLONG
 #undef ULONGLONG
-#undef DWORD
 #undef BOOL
 #undef TRUE
 #undef FALSE
@@ -93,7 +91,6 @@ inline unsigned char* mwBufferAddress(unsigned char* p) noexcept
 #undef UINT
 #undef ULONG
 #undef USHORT
-#undef LPBYTE
 #undef LPDWORD
 
 namespace Gfx::Magewell
