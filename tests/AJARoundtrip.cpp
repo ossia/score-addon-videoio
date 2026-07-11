@@ -522,6 +522,10 @@ const char* apiName(score::gfx::GraphicsApi a)
   }
 }
 
+// Whether the OUT card can route single-link >=6G UHD (12G crosspoints).
+// Filled by probeDevice; gates the honest SKIP for HFR single-link UHD.
+static bool g_canDo12gRouting = false;
+
 // Capability probe: open each card briefly, return device ID, close.
 bool probeDevice(
     int idx, NTV2DeviceID& outId,
@@ -544,6 +548,8 @@ bool probeDevice(
       if(card.features().CanDoFrameBufferFormat(fbf))
         outFbfs->insert(fbf);
     }
+  if(outFbfs) // only the OUT-card probe passes outFbfs
+    g_canDo12gRouting = card.features().CanDo12gRouting();
   // Read-only firmware info (informs whether a different bitfile personality
   // might enable other modes).
   UWord fwRev = 0;
@@ -1085,6 +1091,21 @@ int runSweep(const Options& opt)
         r.videoFormat = vf.name; r.pixelFormat = pf.outName;
         r.interop = "-";
         r.status = "SKIP(fbf-unsupported)";
+        rows.push_back(r);
+        continue;
+      }
+      // Single-link >=6G UHD needs 12G crosspoints. Without CanDo12gRouting
+      // the TSI quad fallback mislabels its links (ST425-1 VPIDs) and the
+      // link-grouped 12G mux never engages from user space (PHY stays 3G
+      // while inserting an ST2081-10 VPID) — driver/FW 18.0.0, see
+      // aja-vpid-regression-report.md. Not roundtrippable; skip honestly.
+      if(NTV2_IS_4K_VIDEO_FORMAT(vf.fmt) && !NTV2_IS_QUAD_QUAD_FORMAT(vf.fmt)
+         && vf.rate > 31.0 && !g_canDo12gRouting)
+      {
+        Result r;
+        r.videoFormat = vf.name; r.pixelFormat = pf.outName;
+        r.interop = "-";
+        r.status = "SKIP(no-12g-routing)";
         rows.push_back(r);
         continue;
       }
