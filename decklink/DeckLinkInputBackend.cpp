@@ -27,7 +27,9 @@
 #include <QDebug>
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
+#include <thread>
 
 namespace Gfx::DeckLink
 {
@@ -313,14 +315,23 @@ bool DeckLinkInputBackend::open()
       m_enableFlags |= bmdVideoInputEnableFormatDetection;
   }
 
-  if(m_input->EnableVideoInput(
-         m_settings.displayMode, m_settings.pixelFormat, m_enableFlags)
-     != S_OK)
+  // The driver releases a previous owner's input claim asynchronously: an app
+  // (re)opening the device right after another one closed it — including our
+  // own previous run — gets a transient failure here, more often on HDMI where
+  // the RX front-end also retrains. One failed call must not condemn the whole
+  // capture to the silent black-frame path, so retry with a short backoff.
+  HRESULT hr = E_FAIL;
+  for(int attempt = 0; attempt < 20; ++attempt)
   {
-    qWarning() << "DeckLink input: EnableVideoInput failed";
-    return false;
+    hr = m_input->EnableVideoInput(
+        m_settings.displayMode, m_settings.pixelFormat, m_enableFlags);
+    if(hr == S_OK)
+      return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
-  return true;
+  qWarning() << "DeckLink input: EnableVideoInput failed, hr =" << Qt::hex
+             << quint32(hr);
+  return false;
 }
 
 Video::ImageFormat DeckLinkInputBackend::imageFormat() const
