@@ -587,11 +587,15 @@ int main(int argc, char** argv)
   QCommandLineOption conns("conn", "Comma list of connectors: sdi,hdmi", "c");
   QCommandLineOption dump("dump", "Save first verified frame per cell", "prefix");
   QCommandLineOption list("list", "Print supported matrix and exit");
-  p.addOptions({secs, dev, modes, pfs, conns, dump, list});
+  QCommandLineOption apiOpt(
+      "api", "Render backend: opengl | vulkan", "api", "opengl");
+  p.addOptions({secs, dev, modes, pfs, conns, dump, list, apiOpt});
   p.addHelpOption();
   p.process(*qApp);
 
   Options opt;
+  if(p.value(apiOpt) == "vulkan")
+    opt.api = score::gfx::GraphicsApi::Vulkan;
   opt.seconds = p.value(secs).toDouble();
   opt.device = p.value(dev).toInt();
   opt.list = p.isSet(list);
