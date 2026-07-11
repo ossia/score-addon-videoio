@@ -602,8 +602,23 @@ bool CaptureSession::setupChannel()
       sdiCount = 4;
     }
   }
+  // 12G/6G single-link: spigot ≠ framestore. The ≥6G-capable PHY is
+  // connector 3, but the raster must land in a real framestore — the
+  // 12Bit personality has only 2 framestores for 4 spigots, so FS3+
+  // silently don't exist (channel enables no-op, no input VBIs, and
+  // AutoCirculate parks in STARTING forever). Mirror of the output side.
+  if(m_use12G
+     && UWord(m_masterChannel) >= m_card->features().GetNumFrameStores())
+  {
+    qWarning() << "AJA input: channel" << (int(m_masterChannel) + 1)
+               << "is not a framestore on this firmware; using channel 1";
+    m_masterChannel = NTV2_CHANNEL1;
+  }
   m_activeFrameStores = ::NTV2MakeChannelSet(m_masterChannel, fbCount);
-  m_activeSDIs = ::NTV2MakeChannelSet(m_masterChannel, sdiCount);
+  if(m_use12G)
+    m_activeSDIs = NTV2ChannelSet{NTV2_CHANNEL3};
+  else
+    m_activeSDIs = ::NTV2MakeChannelSet(m_masterChannel, sdiCount);
   m_isQuadQuad = isQuadQuad;
   m_is4K = isQuad4K;
   m_useTSI = useTSI;
@@ -741,8 +756,11 @@ bool CaptureSession::detectAndApplyFormatChange()
 {
   if(!m_card)
     return false;
+  const NTV2Channel statusCh = (m_use12G && !m_activeSDIs.empty())
+                                   ? *m_activeSDIs.begin()
+                                   : m_masterChannel;
   const NTV2InputSource src
-      = ::NTV2ChannelToInputSource(m_masterChannel, NTV2_IOKINDS_SDI);
+      = ::NTV2ChannelToInputSource(statusCh, NTV2_IOKINDS_SDI);
   NTV2VideoFormat now = m_card->GetInputVideoFormat(src);
   if(now == NTV2_FORMAT_UNKNOWN)
   {
@@ -816,8 +834,11 @@ bool CaptureSession::routeSignal(
   // internally given the frame format and SetVideoFormat were called.
   if(m_use12G)
   {
+    // Spigot ≠ framestore for single-link ≥6G (see topology setup).
+    const NTV2Channel spigot
+        = m_activeSDIs.empty() ? m_masterChannel : *m_activeSDIs.begin();
     const NTV2OutputCrosspointID sdiOutXpt
-        = ::GetSDIInputOutputXptFromChannel(m_masterChannel, /*DS2=*/false);
+        = ::GetSDIInputOutputXptFromChannel(spigot, /*DS2=*/false);
     const NTV2InputCrosspointID fbInXpt
         = ::GetFrameStoreInputXptFromChannel(m_masterChannel, /*isBInput=*/false);
     if(isYCbCrFB)
@@ -980,8 +1001,11 @@ void CaptureSession::readSDIStatus()
   if(!m_card->ReadSDIStatistics(stats))
     return;
   NTV2SDIInputStatus status;
+  const NTV2Channel statusCh = (m_use12G && !m_activeSDIs.empty())
+                                   ? *m_activeSDIs.begin()
+                                   : m_masterChannel;
   const UWord spigot = static_cast<UWord>(::GetIndexForNTV2InputSource(
-      ::NTV2ChannelToInputSource(m_masterChannel, NTV2_IOKINDS_SDI)));
+      ::NTV2ChannelToInputSource(statusCh, NTV2_IOKINDS_SDI)));
   stats.GetSDIInputStatus(status, spigot);
   signalLocked.store(status.mLocked, std::memory_order_relaxed);
   // CRC tallies are per-line counts, separate for the "A" and "B"
