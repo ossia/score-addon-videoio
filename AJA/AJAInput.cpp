@@ -263,11 +263,18 @@ private:
         }
       }
 
+      // Drain every complete frame this VBI slot. One transfer per VBI
+      // cannot recover once a transfer overruns a frame period (UHD DMA +
+      // enqueue > 16.7 ms occasionally): the ring level climbs until AC
+      // overwrites, delivery caps near half rate with index gaps. Bounded
+      // so a stall never spins here forever.
+      for(int drained = 0; drained < 8; ++drained)
+      {
       AUTOCIRCULATE_STATUS status;
       if(!card->AutoCirculateGetStatus(ch, status))
-        continue;
+        break;
       if(!status.IsRunning() || !status.HasAvailableInputFrame())
-        continue;
+        break;
 
       // Backpressure: if the renderer has fallen behind, drop the
       // oldest before enqueueing.
@@ -330,6 +337,7 @@ private:
 
       m_queue.enqueue(avFrame.release());
       m_goodXfers.fetch_add(1, std::memory_order_relaxed);
+      }
     }
   }
 
