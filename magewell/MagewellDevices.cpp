@@ -16,7 +16,7 @@ bool ensureMwInit() noexcept
   // teardown), so we init once and never explicitly exit.
   static std::once_flag once;
   static std::atomic<bool> ok{false};
-  std::call_once(once, [] { ok.store(MWCaptureInitInstance() == TRUE); });
+  std::call_once(once, [] { ok.store(MWCaptureInitInstance() != 0); });
   return ok.load();
 }
 

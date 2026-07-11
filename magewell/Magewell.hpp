@@ -43,6 +43,12 @@ inline bool mwEventWait(MwEvent h, unsigned long ms) noexcept
 {
   return WaitForSingleObject(h, ms) == WAIT_OBJECT_0;
 }
+/// MWPinVideoBuffer/MWUnpinVideoBuffer buffer argument (LPBYTE on Windows,
+/// MWCAP_PTR address on Linux).
+inline unsigned char* mwBufferAddress(unsigned char* p) noexcept
+{
+  return p;
+}
 } // namespace Gfx::Magewell
 
 #else
@@ -61,10 +67,34 @@ inline bool mwEventWait(MwEvent h, unsigned long ms) noexcept
 
 #include <MWFOURCC.h>
 
+// WinTypes.h defines the Win32 scalar look-alikes as MACROS (BOOL, CHAR,
+// TRUE, ...). Left defined, they poison every identifier of the same name in
+// downstream headers (ossia's val_type enum has BOOL/CHAR/FLOAT members).
+// The SDK prototypes above are already parsed, so undefine them all; our own
+// code uses plain C++ types instead.
 #undef HANDLE
 #undef RECT
 #undef PRECT
 #undef LPRECT
+#undef BYTE
+#undef CHAR
+#undef WORD
+#undef SHORT
+#undef INT
+#undef FLOAT
+#undef LONG
+#undef LONGLONG
+#undef ULONGLONG
+#undef DWORD
+#undef BOOL
+#undef TRUE
+#undef FALSE
+#undef VOID
+#undef UINT
+#undef ULONG
+#undef USHORT
+#undef LPBYTE
+#undef LPDWORD
 
 namespace Gfx::Magewell
 {
@@ -82,6 +112,12 @@ inline void mwEventClose(MwEvent h) noexcept
 inline bool mwEventWait(MwEvent h, unsigned long ms) noexcept
 {
   return MWWaitEvent(h, int(ms)) > 0;
+}
+/// MWPinVideoBuffer/MWUnpinVideoBuffer buffer argument (LPBYTE on Windows,
+/// MWCAP_PTR address on Linux).
+inline MWCAP_PTR mwBufferAddress(unsigned char* p) noexcept
+{
+  return MWCAP_PTR(reinterpret_cast<uintptr_t>(p));
 }
 } // namespace Gfx::Magewell
 
