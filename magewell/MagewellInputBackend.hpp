@@ -72,8 +72,8 @@ private:
   HCHANNEL m_channel{nullptr};
   score::gfx::interop::GpuDirectCaptureStrategy* m_strategy{};
 
-  HANDLE m_notifyEvent{nullptr};
-  HANDLE m_captureEvent{nullptr};
+  MwEvent m_notifyEvent{mwNoEvent};
+  MwEvent m_captureEvent{mwNoEvent};
   HNOTIFY m_notify{0};
 
   static constexpr std::size_t kMaxSlots = 3;

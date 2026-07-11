@@ -198,6 +198,24 @@ bool DeckLinkInputBackend::open()
      || !m_input)
     return false;
 
+  // Route the requested physical connector before mode validation — signal
+  // detection and DoesSupportVideoMode depend on the active input.
+  if(m_settings.connection != BMDVideoConnection(0))
+  {
+    ComPtr<IDeckLinkConfiguration> cfg;
+    if(m_device->QueryInterface(IID_IDeckLinkConfiguration, cfg.putVoid())
+           == S_OK
+       && cfg)
+    {
+      if(cfg->SetInt(
+             bmdDeckLinkConfigVideoInputConnection,
+             int64_t(m_settings.connection))
+         != S_OK)
+        qWarning() << "DeckLink input: could not select input connection"
+                   << int64_t(m_settings.connection);
+    }
+  }
+
   ComPtr<IDeckLinkDisplayModeIterator> modeIt;
   ComPtr<IDeckLinkDisplayMode> mode;
   if(m_input->GetDisplayModeIterator(modeIt.put()) == S_OK && modeIt)

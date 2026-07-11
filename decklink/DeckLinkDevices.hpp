@@ -2,6 +2,8 @@
 #include <decklink/DeckLink.hpp>
 #include <decklink/DeckLinkComPtr.hpp>
 
+#include <score_addon_videoio_export.h>
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -21,12 +23,15 @@ struct DeviceInfo
 
 /// CoInitializeEx for the calling thread. Safe to call repeatedly; tolerates an
 /// already-initialised apartment. Returns false only on a hard failure.
+SCORE_ADDON_VIDEOIO_EXPORT
 bool ensureComInit() noexcept;
 
 /// Enumerate all installed DeckLink sub-devices.
+SCORE_ADDON_VIDEOIO_EXPORT
 std::vector<DeviceInfo> enumerateDevices();
 
 /// Open the device at iterator position `index` (or null if out of range).
+SCORE_ADDON_VIDEOIO_EXPORT
 ComPtr<IDeckLink> openDevice(int index);
 
 } // namespace Gfx::DeckLink

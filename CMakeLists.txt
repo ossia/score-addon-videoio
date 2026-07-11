@@ -131,7 +131,41 @@ if(WIN32 AND WIDL_EXECUTABLE AND EXISTS "${DECKLINK_SDK_ROOT}/Win/include/DeckLi
   list(APPEND VIDEOIO_DEFS SCORE_HAS_DECKLINK=1)
   message(STATUS "score-addon-videoio: DeckLink enabled (widl: ${WIDL_EXECUTABLE})")
 else()
-  message(STATUS "score-addon-videoio: DeckLink disabled (need WIN32 + widl + SDK)")
+  # Linux: the SDK ships ready C++ headers (DeckLinkAPI.h) and a dispatch TU
+  # that dlopens Desktop Video's libDeckLinkAPI.so at runtime — no codegen, no
+  # link-time dependency. Arch's decklink-sdk installs both to /usr/include.
+  find_path(DECKLINK_LINUX_INCLUDE_DIR DeckLinkAPI.h
+    PATHS "${DECKLINK_SDK_ROOT}/Linux/include" /usr/include /usr/local/include)
+  if(UNIX AND NOT APPLE
+     AND DECKLINK_LINUX_INCLUDE_DIR
+     AND EXISTS "${DECKLINK_LINUX_INCLUDE_DIR}/DeckLinkAPIDispatch.cpp")
+    list(APPEND VIDEOIO_HDRS
+      "${CMAKE_CURRENT_SOURCE_DIR}/decklink/DeckLink.hpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/decklink/DeckLinkComPtr.hpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/decklink/DeckLinkFormats.hpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/decklink/DeckLinkDevices.hpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/decklink/DeckLinkOutputBackend.hpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/decklink/DeckLinkCpuCapture.hpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/decklink/DeckLinkInputBackend.hpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/decklink/DeckLinkModeMap.hpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/decklink/DeckLinkNode.hpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/decklink/DeckLinkCaptureNode.hpp")
+    list(APPEND VIDEOIO_SRCS
+      "${CMAKE_CURRENT_SOURCE_DIR}/decklink/DeckLinkDevices.cpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/decklink/DeckLinkOutputBackend.cpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/decklink/DeckLinkInputBackend.cpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/decklink/DeckLinkNode.cpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/decklink/DeckLinkCaptureNode.cpp")
+    # The dispatch stub is SDK C++ (dlopen + symbol table); keep it out of the
+    # PCH like the generated COM TU on Windows.
+    list(APPEND VIDEOIO_GEN_SRCS "${DECKLINK_LINUX_INCLUDE_DIR}/DeckLinkAPIDispatch.cpp")
+    list(APPEND VIDEOIO_INCS "${DECKLINK_LINUX_INCLUDE_DIR}")
+    list(APPEND VIDEOIO_DEFS SCORE_HAS_DECKLINK=1)
+    set(VIDEOIO_HAS_DECKLINK TRUE)
+    message(STATUS "score-addon-videoio: DeckLink enabled (Linux SDK: ${DECKLINK_LINUX_INCLUDE_DIR})")
+  else()
+    message(STATUS "score-addon-videoio: DeckLink disabled (need WIN32+widl+SDK or Linux decklink-sdk headers)")
+  endif()
 endif()
 
 # --- DELTACAST VideoMaster ---------------------------------------------------
@@ -224,8 +258,31 @@ if(WIN32 AND EXISTS "${MAGEWELL_SDK_ROOT}/Include/LibMWCapture/MWCapture.h"
     "${MAGEWELL_SDK_ROOT}/Examples/Python/AVCapturePY/mwcapture/bin/x64/LibMWCapture.dll")
   set(VIDEOIO_HAS_MAGEWELL TRUE)
   message(STATUS "score-addon-videoio: Magewell enabled (SDK: ${MAGEWELL_SDK_ROOT})")
+elseif(UNIX AND NOT APPLE
+       AND EXISTS "${MAGEWELL_SDK_ROOT}/Include/LibMWCapture/MWCapture.h"
+       AND EXISTS "${MAGEWELL_SDK_ROOT}/Lib/x64/libMWCapture.a")
+  # Linux MWCapture SDK: identical C API + static lib; events go through the
+  # SDK's own MWCreateEvent/MWWaitEvent (see magewell/Magewell.hpp).
+  list(APPEND VIDEOIO_HDRS
+    "${CMAKE_CURRENT_SOURCE_DIR}/magewell/Magewell.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/magewell/MagewellFormats.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/magewell/MagewellDevices.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/magewell/MagewellCpuCapture.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/magewell/MagewellInputBackend.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/magewell/MagewellCaptureNode.hpp")
+  list(APPEND VIDEOIO_SRCS
+    "${CMAKE_CURRENT_SOURCE_DIR}/magewell/MagewellDevices.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/magewell/MagewellInputBackend.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/magewell/MagewellCaptureNode.cpp")
+  list(APPEND VIDEOIO_INCS
+    "${MAGEWELL_SDK_ROOT}/Include"
+    "${MAGEWELL_SDK_ROOT}/Include/LibMWCapture")
+  list(APPEND VIDEOIO_DEFS SCORE_HAS_MAGEWELL=1)
+  set(VIDEOIO_MAGEWELL_LIB "${MAGEWELL_SDK_ROOT}/Lib/x64/libMWCapture.a")
+  set(VIDEOIO_HAS_MAGEWELL TRUE)
+  message(STATUS "score-addon-videoio: Magewell enabled (Linux SDK: ${MAGEWELL_SDK_ROOT})")
 else()
-  message(STATUS "score-addon-videoio: Magewell disabled (need WIN32 + LibMWCapture SDK)")
+  message(STATUS "score-addon-videoio: Magewell disabled (need LibMWCapture SDK)")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -319,6 +376,13 @@ endif()
 # --- Magewell link -----------------------------------------------------------
 if(VIDEOIO_HAS_MAGEWELL)
   target_link_libraries(${PROJECT_NAME} PRIVATE "${VIDEOIO_MAGEWELL_LIB}")
+  if(UNIX AND NOT APPLE)
+    # Per the Linux SDK examples: MWCapture drives /dev udev enumeration and
+    # the capture cards' ALSA audio endpoints from the static lib.
+    find_package(Threads REQUIRED)
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+      Threads::Threads ${CMAKE_DL_LIBS} udev asound)
+  endif()
 
   # MWCapture.h pulls in <Windows.h>/<ks.h>/<ksmedia.h>; it compiles cleanly
   # under clang64 without -fdeclspec (LIBMWCAPTURE_API stays empty since we do
@@ -379,4 +443,34 @@ if(SCORE_VIDEOIO_BUILD_TESTS AND VIDEOIO_HAS_AJA)
   target_include_directories(aja_hdmi_out_probe PRIVATE
     "${VIDEOIO_AJA_SDK_ROOT}/ajantv2/includes" "${VIDEOIO_AJA_SDK_ROOT}")
   target_link_libraries(aja_hdmi_out_probe PRIVATE ajantv2)
+endif()
+
+# --- DeckLink single-card loopback round-trip harness (opt-in) ---------------
+if(SCORE_VIDEOIO_BUILD_TESTS AND VIDEOIO_HAS_DECKLINK)
+  add_executable(DecklinkRoundtrip tests/DecklinkRoundtrip.cpp)
+  target_include_directories(DecklinkRoundtrip PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_BINARY_DIR}"
+    ${VIDEOIO_INCS})
+  target_link_libraries(DecklinkRoundtrip PRIVATE
+    ${PROJECT_NAME}
+    ${QT_PREFIX}::Core ${QT_PREFIX}::Gui ${QT_PREFIX}::Widgets)
+  if(SCORE_STATIC_PLUGINS)
+    target_link_libraries(DecklinkRoundtrip PRIVATE ${SCORE_PLUGINS_LIST})
+  endif()
+endif()
+
+# --- Magewell live-capture validation (opt-in) --------------------------------
+if(SCORE_VIDEOIO_BUILD_TESTS AND VIDEOIO_HAS_MAGEWELL)
+  add_executable(MagewellCaptureTest tests/MagewellCaptureTest.cpp)
+  target_include_directories(MagewellCaptureTest PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_BINARY_DIR}"
+    ${VIDEOIO_INCS})
+  target_link_libraries(MagewellCaptureTest PRIVATE
+    ${PROJECT_NAME}
+    ${QT_PREFIX}::Core ${QT_PREFIX}::Gui ${QT_PREFIX}::Widgets)
+  if(SCORE_STATIC_PLUGINS)
+    target_link_libraries(MagewellCaptureTest PRIVATE ${SCORE_PLUGINS_LIST})
+  endif()
 endif()

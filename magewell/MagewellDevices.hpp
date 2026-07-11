@@ -1,4 +1,6 @@
 #pragma once
+#include <score_addon_videoio_export.h>
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -20,9 +22,11 @@ struct DeviceInfo
 /// Initialize the MWCapture runtime exactly once (MWCaptureInitInstance).
 /// Process-lifetime init; safe to call repeatedly. Returns false if the SDK
 /// runtime/driver is missing.
+SCORE_ADDON_VIDEOIO_EXPORT
 bool ensureMwInit() noexcept;
 
 /// Enumerate installed Magewell capture channels (PCIe only; USB skipped).
+SCORE_ADDON_VIDEOIO_EXPORT
 std::vector<DeviceInfo> enumerateDevices();
 
 } // namespace Gfx::Magewell
