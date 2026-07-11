@@ -58,9 +58,17 @@ public:
   HRESULT STDMETHODCALLTYPE ScheduledFrameCompleted(
       IDeckLinkVideoFrame* frame, BMDOutputFrameCompletionResult result) override
   {
+    // Late/dropped completions are expected transients around producer
+    // hiccups (submitFrame resyncs the schedule clock); log a sample, not a
+    // storm — the totals are reported by the backend at close().
     if(result == bmdOutputFrameDisplayedLate || result == bmdOutputFrameDropped)
-      qDebug() << "DeckLink: scheduled frame"
-               << (result == bmdOutputFrameDropped ? "dropped" : "late");
+    {
+      const auto n = m_backend.noteLateCompletion();
+      if((n & (n - 1)) == 0) // 1, 2, 4, 8, ...
+        qDebug() << "DeckLink: scheduled frame"
+                 << (result == bmdOutputFrameDropped ? "dropped" : "late")
+                 << "(total" << n << ")";
+    }
     m_backend.onFrameCompleted(frame);
     return S_OK;
   }
@@ -232,6 +240,10 @@ void DeckLinkOutputBackend::close()
 {
   if(m_output)
   {
+    if(m_lateResyncs || m_lateCompletions.load(std::memory_order_relaxed))
+      qDebug() << "DeckLink output: session totals — late/dropped completions"
+               << m_lateCompletions.load(std::memory_order_relaxed)
+               << ", frames skipped by clock resync" << m_lateResyncs;
     if(!m_quiesced)
       quiesce();
     m_output->SetScheduledFrameCompletionCallback(nullptr);
@@ -368,6 +380,30 @@ bool DeckLinkOutputBackend::submitFrame(void* framePtr)
   }
   std::memcpy(dst, framePtr, m_frameByteSize);
   buf->EndAccess(bmdBufferAccessWrite);
+
+  // Display-time resync. Times are absolute (frameCount * duration), so if the
+  // producer ever falls behind the playback clock, every subsequent frame
+  // would be scheduled in the past and completed "late/dropped" forever (the
+  // SignalGenerator sample can't hit this: its producer IS the completion
+  // callback). When the next slot is no longer ahead of the clock, jump the
+  // counter to one full frame past the currently-displaying one.
+  if(m_started)
+  {
+    BMDTimeValue streamTime = 0;
+    double speed = 1.0;
+    if(m_output->GetScheduledStreamTime(m_timeScale, &streamTime, &speed)
+       == S_OK)
+    {
+      const auto next = static_cast<BMDTimeValue>(m_frameCount * m_frameDuration);
+      if(next <= streamTime)
+      {
+        const std::uint64_t resynced
+            = static_cast<std::uint64_t>(streamTime / m_frameDuration) + 2;
+        m_lateResyncs += resynced - m_frameCount;
+        m_frameCount = resynced;
+      }
+    }
+  }
 
   const HRESULT hr = m_output->ScheduleVideoFrame(
       frame, static_cast<BMDTimeValue>(m_frameCount * m_frameDuration),
