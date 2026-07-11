@@ -174,6 +174,13 @@ bool DeckLinkOutputBackend::open(score::gfx::GraphicsApi)
       if(m_cfg->SetFlag(bmdDeckLinkConfig444SDIVideoOutput, rgbWire) != S_OK
          && rgbWire)
         qWarning() << "DeckLink: could not enable 4:4:4 SDI output";
+      // The Studio 4K mirrors playout to SDI and HDMI, but its HDMI encoder
+      // emits no TMDS at all for RGB framebuffers (Desktop Video 16.1a3,
+      // SDK-verified) — only the SDI mirror carries (converted) video.
+      if(rgbWire)
+        qWarning() << "DeckLink: RGB playout — the HDMI mirror of this "
+                      "output will carry no signal on this hardware; use the "
+                      "SDI connector or a YUV pixel format for HDMI.";
     }
   }
 

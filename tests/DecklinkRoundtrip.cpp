@@ -444,6 +444,18 @@ Result runCell(
         return r;
       }
     }
+
+    // Studio 4K / Desktop Video 16.1a3: DoesSupportVideoMode claims RGB over
+    // HDMI, but the HDMI encoder emits no TMDS at all for RGB framebuffers —
+    // any mode, with or without the 4:4:4 flag (pure-SDK loopback verified;
+    // the SDI mirror of the same output carries converted content). The claim
+    // lies, so gate it here.
+    if(cn.conn == bmdVideoConnectionHDMI
+       && (pf.fmt == bmdFormat8BitBGRA || pf.fmt == bmdFormat10BitRGB))
+    {
+      r.status = "SKIP(hw-out-hdmi-rgb)";
+      return r;
+    }
   }
 
   DeckLinkOutputSettings outS;
