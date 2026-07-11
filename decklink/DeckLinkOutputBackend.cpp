@@ -165,12 +165,13 @@ bool DeckLinkOutputBackend::open(score::gfx::GraphicsApi)
   {
     const bool rgbWire = m_settings.pixelFormat != bmdFormat8BitYUV
                          && m_settings.pixelFormat != bmdFormat10BitYUV;
-    ComPtr<IDeckLinkConfiguration> cfg;
-    if(m_device->QueryInterface(IID_IDeckLinkConfiguration, cfg.putVoid())
+    // The setting only holds while the configuration object lives (it reverts
+    // on release), so this must be the long-lived member, not a temporary.
+    if(m_device->QueryInterface(IID_IDeckLinkConfiguration, m_cfg.putVoid())
            == S_OK
-       && cfg)
+       && m_cfg)
     {
-      if(cfg->SetFlag(bmdDeckLinkConfig444SDIVideoOutput, rgbWire) != S_OK
+      if(m_cfg->SetFlag(bmdDeckLinkConfig444SDIVideoOutput, rgbWire) != S_OK
          && rgbWire)
         qWarning() << "DeckLink: could not enable 4:4:4 SDI output";
     }

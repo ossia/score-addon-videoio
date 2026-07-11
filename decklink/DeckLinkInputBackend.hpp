@@ -66,6 +66,9 @@ private:
 
   ComPtr<IDeckLink> m_device;
   ComPtr<IDeckLinkInput> m_input;
+  /// Config settings revert when the IDeckLinkConfiguration object is
+  /// released — keep it alive while the capture runs (connector routing).
+  ComPtr<IDeckLinkConfiguration> m_cfg;
   ComPtr<IDeckLinkInputCallback> m_callback;
   score::gfx::interop::GpuDirectCaptureStrategy* m_strategy{};
 

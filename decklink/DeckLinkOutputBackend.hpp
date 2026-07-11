@@ -92,6 +92,9 @@ private:
 
   ComPtr<IDeckLink> m_device;
   ComPtr<IDeckLinkOutput> m_output;
+  /// Config settings revert when the IDeckLinkConfiguration object is
+  /// released — keep it alive for the stream's lifetime (444 wire flag).
+  ComPtr<IDeckLinkConfiguration> m_cfg;
   ComPtr<IDeckLinkVideoOutputCallback> m_callback;
 
   // Completion-tracked frame pool. m_pool owns every frame for the session;

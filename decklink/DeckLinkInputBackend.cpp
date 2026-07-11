@@ -277,12 +277,13 @@ bool DeckLinkInputBackend::open()
   // detection and DoesSupportVideoMode depend on the active input.
   if(m_settings.connection != BMDVideoConnection(0))
   {
-    ComPtr<IDeckLinkConfiguration> cfg;
-    if(m_device->QueryInterface(IID_IDeckLinkConfiguration, cfg.putVoid())
+    // Long-lived member on purpose: config values revert when the
+    // IDeckLinkConfiguration object is released.
+    if(m_device->QueryInterface(IID_IDeckLinkConfiguration, m_cfg.putVoid())
            == S_OK
-       && cfg)
+       && m_cfg)
     {
-      if(cfg->SetInt(
+      if(m_cfg->SetInt(
              bmdDeckLinkConfigVideoInputConnection,
              int64_t(m_settings.connection))
          != S_OK)
