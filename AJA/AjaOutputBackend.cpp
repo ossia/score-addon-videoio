@@ -523,8 +523,25 @@ bool AjaOutputBackend::initializeAJADevice()
       sdiCount = 4;
     }
   }
+  // 12G/6G single-link: framestore and SDI spigot are DIFFERENT channels.
+  // The single-link ≥6G PHY lives on connector 3 (AJA's own demos hardcode
+  // NTV2_CHANNEL3 for the link-grouped path; retail FW puts the 2081-10
+  // VPID there), while the raster must live in a real framestore — the
+  // Kona5-12Bit personality exposes only 2 framestores for 4 spigots, so
+  // FS3 silently doesn't exist (enables no-op, no input VBIs, AC parks in
+  // STARTING forever). Decouple: FS[m_channel] + SDIOut3.
+  if(m_use12G
+     && UWord(m_channel) >= m_card->features().GetNumFrameStores())
+  {
+    qWarning() << "AJA: channel" << (int(m_channel) + 1)
+               << "is not a framestore on this firmware; using channel 1";
+    m_channel = NTV2_CHANNEL1;
+  }
   m_activeFrameStores = ::NTV2MakeChannelSet(m_channel, fbCount);
-  m_activeSDIs = ::NTV2MakeChannelSet(m_channel, sdiCount);
+  if(m_use12G)
+    m_activeSDIs = NTV2ChannelSet{NTV2_CHANNEL3};
+  else
+    m_activeSDIs = ::NTV2MakeChannelSet(m_channel, sdiCount);
   qDebug() << "AJA: topology fbCount=" << fbCount << "sdiCount=" << sdiCount
            << "is4K=" << m_is4K << "isQuadQuad=" << m_isQuadQuad
            << "use12G=" << m_use12G << "useTSI=" << m_useTSI
@@ -926,9 +943,12 @@ void AjaOutputBackend::buildSignalRoute(NTV2XptConnections& conns)
   // ──────────────────────────────────────────────────────────────
   if(m_use12G)
   {
+    // Spigot ≠ framestore for single-link ≥6G (see topology setup).
+    const NTV2Channel spigot
+        = m_activeSDIs.empty() ? m_channel : *m_activeSDIs.begin();
     const NTV2OutputCrosspointID fbOut
         = ::GetFrameBufferOutputXptFromChannel(m_channel, isRGB, false);
-    const NTV2InputCrosspointID sdiIn = ::GetSDIOutputInputXpt(m_channel, false);
+    const NTV2InputCrosspointID sdiIn = ::GetSDIOutputInputXpt(spigot, false);
     if(isRGB)
     {
       const NTV2InputCrosspointID cscIn = ::GetCSCInputXptFromChannel(m_channel);

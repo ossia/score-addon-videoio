@@ -460,6 +460,7 @@ struct Result
 struct Options
 {
   int outDevice = 0, inDevice = 1;
+  int outChannel = 0, inChannel = 0; // SDI/FrameStore base (connector diag)
   double seconds = 5.0;
   std::vector<std::string> formats;  // empty => default curated set
   std::vector<std::string> pixfmts;  // empty => all in table
@@ -797,7 +798,7 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
   // --- Receiver (card B) ---
   AJAInputSettings inS;
   inS.deviceIndex = opt.inDevice;
-  inS.channelIndex = 0;
+  inS.channelIndex = opt.inChannel;
   inS.videoFormat = vf.name;
   inS.videoFormatEnum = vf.fmt; // configured-format fallback for any NTV2 format
   inS.pixelFormat = pf.in;
@@ -819,7 +820,7 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
   // --- Sender (card A): TexgenNode -> AJANode ---
   AJAOutputSettings outS;
   outS.deviceIndex = opt.outDevice;
-  outS.channelIndex = 0;
+  outS.channelIndex = opt.outChannel;
   outS.width = vf.w;
   outS.height = vf.h;
   outS.rate = vf.rate;
@@ -1478,6 +1479,10 @@ Options parseOptions()
   p.addHelpOption();
   QCommandLineOption outDev("out-device", "Output card index", "n", "0");
   QCommandLineOption inDev("in-device", "Input card index", "n", "1");
+  QCommandLineOption outCh(
+      "out-channel", "Output SDI/FrameStore base channel (0-based)", "n", "0");
+  QCommandLineOption inCh(
+      "in-channel", "Input SDI/FrameStore base channel (0-based)", "n", "0");
   QCommandLineOption secs("seconds", "Seconds per cell", "s", "5");
   QCommandLineOption fmts("formats", "Comma-separated videoFormat names", "list");
   QCommandLineOption pfs("pixfmt", "Comma-separated pixelFormat names", "list");
@@ -1507,12 +1512,14 @@ Options parseOptions()
       "Card-free Vulkan<->CUDA external-memory probe (zero-copy capture "
       "foundation), then exit");
   p.addOptions(
-      {outDev, inDev, secs, fmts, pfs, iop, dump, rx, apiOpt, eightKModeOpt,
-       allFmt, hdrOpt, list, benchUp, vkProbe});
+      {outDev, inDev, outCh, inCh, secs, fmts, pfs, iop, dump, rx, apiOpt,
+       eightKModeOpt, allFmt, hdrOpt, list, benchUp, vkProbe});
   p.process(*qApp);
 
   o.outDevice = p.value(outDev).toInt();
   o.inDevice = p.value(inDev).toInt();
+  o.outChannel = p.value(outCh).toInt();
+  o.inChannel = p.value(inCh).toInt();
   o.seconds = p.value(secs).toDouble();
   o.listOnly = p.isSet(list);
   auto split = [](const QString& s) {
