@@ -530,12 +530,35 @@ Result runCell(
   r.txDrops = out->pacingDrops();
   r.sent = int(out->pacingGoodXfers());
 
+  // RGB cells: the Studio 4K (driver 16.1a3) transports RGB modes over a
+  // YCbCr 4:2:2 wire regardless of the 4:4:4 config flag — pure-SDK loopback
+  // shows the same ~0.978 level scale + chroma subsampling. That's a card
+  // limitation, not a pipeline bug, so detect the actual wire colorspace and
+  // SKIP honestly instead of failing the pixel gate we can never meet.
+  bool ycbcrWire = false;
+  const bool rgbRequested
+      = pf.fmt != bmdFormat8BitYUV && pf.fmt != bmdFormat10BitYUV;
+  if(rgbRequested)
+  {
+    ComPtr<IDeckLink> dev = openDevice(opt.device);
+    ComPtr<IDeckLinkStatus> st;
+    if(dev && dev->QueryInterface(IID_IDeckLinkStatus, st.putVoid()) == S_OK
+       && st)
+    {
+      int64_t flags = 0;
+      if(st->GetInt(bmdDeckLinkStatusDetectedVideoInputFormatFlags, &flags)
+         == S_OK)
+        ycbcrWire = (flags & bmdDetectedVideoInputYCbCr422)
+                    && !(flags & bmdDetectedVideoInputRGB444);
+    }
+  }
+
   if(r.status.empty())
   {
     if(M.psnrCount.load() == 0)
       r.status = "SKIP(no-lock)";
     else if(r.minPsnr < pf.psnrThreshold)
-      r.status = "FAIL(psnr)";
+      r.status = (rgbRequested && ycbcrWire) ? "SKIP(ycbcr-wire)" : "FAIL(psnr)";
     else
       r.status = "PASS";
   }
