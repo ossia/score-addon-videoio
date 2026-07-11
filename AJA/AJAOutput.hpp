@@ -54,6 +54,12 @@ struct AJAOutputSettings
   bool useRDMA{true};
   AJA8KMode mode8K{AJA8KMode::Disabled};
   AJAHDRMode hdrMode{AJAHDRMode::Off};
+  // Max in-flight AutoCirculate output frames the pump keeps queued.
+  // 0 = auto (engine default of 2, lowest safe latency). Higher values trade
+  // one frame period of end-to-end latency per unit (16.7 ms @ 60p, 40 ms @
+  // 25p) for more drop headroom under host jitter. Capped to the AC ring size.
+  // The SCORE_AJA_OUT_DEPTH env var overrides this for debugging.
+  int outputRingDepth{0};
 };
 
 // Protocol factory for AJA SDI output
@@ -138,6 +144,7 @@ private:
   QSpinBox* m_width{};
   QSpinBox* m_height{};
   QSpinBox* m_rate{};
+  QSpinBox* m_outputRingDepth{};
   QCheckBox* m_rdmaCheckbox{};
 };
 
