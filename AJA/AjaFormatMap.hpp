@@ -149,27 +149,6 @@ ajaInputFormatTo(AJAInputPixelFormat fmt) noexcept
   return F::Unknown;
 }
 
-/** True iff @p fmt can actually be PLAYED OUT through the framestore->SDI
- *  path. `CanDoFrameBufferFormat` only answers "can the framestore store
- *  this layout" — several formats are capture/codec-side only and play out
- *  BLACK while the framestore contents are perfectly valid (verified on
- *  Kona 5, all three personalities, by DMA-reading the framestore back
- *  after a playout attempt: correct YUY2 bytes in VRAM, black on the wire):
- *  YUY2 byte order, every planar layout, and 10-bit ARGB. */
-inline bool ajaFbfPlayoutCapable(NTV2FrameBufferFormat fmt) noexcept
-{
-  if(NTV2_IS_FBF_PLANAR(fmt) || NTV2_IS_FBF_PRORES(fmt) || NTV2_FBF_IS_RAW(fmt))
-    return false;
-  switch(fmt)
-  {
-    case NTV2_FBF_8BIT_YCBCR_YUY2:
-    case NTV2_FBF_10BIT_ARGB:
-      return false;
-    default:
-      return true;
-  }
-}
-
 inline score::gfx::interop::VideoPixelFormat
 ntv2FormatTo(NTV2FrameBufferFormat fmt) noexcept
 {

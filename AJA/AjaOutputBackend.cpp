@@ -478,17 +478,6 @@ bool AjaOutputBackend::initializeAJADevice()
     shutdownAJADevice();
     return false;
   }
-  if(!ajaFbfPlayoutCapable(m_bufferFormat))
-  {
-    // The framestore stores these layouts fine but the playout path
-    // rasters BLACK (capture/codec-side formats) — fail loudly instead.
-    qWarning() << "AJA: buffer format"
-               << QString::fromStdString(
-                      ::NTV2FrameBufferFormatToString(m_bufferFormat))
-               << "is capture-only on this hardware (plays out black)";
-    shutdownAJADevice();
-    return false;
-  }
 
   // Pick frame-store and SDI counts from topology.
   UWord fbCount = 1, sdiCount = 1;

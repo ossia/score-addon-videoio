@@ -67,22 +67,16 @@ class InputCallback final : public IDeckLinkInputCallback
 {
 public:
   InputCallback(
-      IDeckLinkInput* input, DeckLinkInputSettings settings,
       score::gfx::interop::GpuDirectCaptureStrategy** strategy,
       score::gfx::interop::GpuDirectCaptureSlotRing& ring,
       std::uint32_t frameByteSize, int rowBytes, int height)
-      : m_input{input}
-      , m_inputSettings{settings}
-      , m_strategy{strategy}
+      : m_strategy{strategy}
       , m_ring{ring}
       , m_frameByteSize{frameByteSize}
       , m_rowBytes{rowBytes}
       , m_height{height}
   {
   }
-
-  /// stop() sets this before StopStreams so a re-arm can't race teardown.
-  std::atomic<bool> stopping{false};
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** ppv) override
   {
@@ -111,12 +105,7 @@ public:
       BMDVideoInputFormatChangedEvents, IDeckLinkDisplayMode*,
       BMDDetectedVideoInputFormatFlags) override
   {
-    // Signal (re)appeared or changed while we run a FIXED mode. Re-arming the
-    // input (sample pattern: pause -> re-enable -> flush -> start) makes the
-    // capture engine re-lock onto the live signal; without it the input can
-    // stay on placeholder frames for the rest of the session.
-    rearm("format-change");
-    return S_OK;
+    return S_OK; // format autodetect handled later; fixed mode for now
   }
 
   HRESULT STDMETHODCALLTYPE VideoInputFrameArrived(
@@ -127,17 +116,8 @@ public:
       return S_OK;
     // Signal loss produces placeholder frames flagged bmdFrameHasNoInputSource;
     // the samples never forward those (the consumer keeps the last good frame).
-    // A capture that starts before the far end locks can stay in this state
-    // forever ("black latch"): the placeholder stream never flips back to real
-    // frames on its own. Count the streak and periodically re-arm the input so
-    // the hardware re-acquires the (by-now valid) signal.
     if(frame->GetFlags() & bmdFrameHasNoInputSource)
-    {
-      if(++m_noSourceStreak >= kRearmAfterNoSource)
-        rearm("no-input-source streak");
       return S_OK;
-    }
-    m_noSourceStreak = 0;
     // SDK 16.0: frame bytes are accessed via IDeckLinkVideoBuffer, not the
     // frame interface.
     ComPtr<IDeckLinkVideoBuffer> buf;
@@ -185,47 +165,12 @@ public:
   }
 
 private:
-  // ~half a second at 60p; placeholder frames keep arriving at mode rate
-  // while unlocked, so the streak advances even with no signal.
-  static constexpr int kRearmAfterNoSource = 25;
-  static constexpr int kMaxRearms = 32;
-
-  /// Re-acquire the signal: pause -> re-enable (same fixed mode) -> flush ->
-  /// start, per the SDK Capture sample. Runs on the SDK callback thread, which
-  /// the API allows (the sample re-enables from VideoInputFormatChanged).
-  void rearm(const char* why)
-  {
-    m_noSourceStreak = 0;
-    if(stopping.load(std::memory_order_acquire) || !m_input)
-      return;
-    if(m_rearms >= kMaxRearms)
-      return;
-    ++m_rearms;
-    qDebug() << "DeckLink input: re-arming capture (" << why << "), attempt"
-             << m_rearms;
-    m_input->PauseStreams();
-    m_input->EnableVideoInput(
-        m_inputSettings.displayMode, m_inputSettings.pixelFormat,
-        m_enabledFlags);
-    m_input->FlushStreams();
-    m_input->StartStreams();
-  }
-
-public:
-  /// Flags EnableVideoInput was opened with (so re-arm keeps format detection).
-  BMDVideoInputFlags m_enabledFlags{bmdVideoInputFlagDefault};
-
-private:
-  IDeckLinkInput* m_input{};
-  DeckLinkInputSettings m_inputSettings;
   score::gfx::interop::GpuDirectCaptureStrategy** m_strategy{};
   score::gfx::interop::GpuDirectCaptureSlotRing& m_ring;
   std::uint32_t m_frameByteSize{};
   int m_rowBytes{};
   int m_height{};
   std::size_t m_slot{0};
-  int m_noSourceStreak{0};
-  int m_rearms{0};
   std::atomic<ULONG> m_ref{1};
 };
 
@@ -297,24 +242,9 @@ bool DeckLinkInputBackend::open()
   m_frameByteSize = static_cast<std::uint32_t>(m_rowBytes)
                     * static_cast<std::uint32_t>(m_height);
 
-  // Format detection lets the SDK fire VideoInputFormatChanged when a signal
-  // (re)appears — the hook the callback's re-arm logic needs to recover from
-  // a capture that started before the source locked.
-  m_enableFlags = bmdVideoInputFlagDefault;
-  {
-    ComPtr<IDeckLinkProfileAttributes> attrs;
-    bool detect = false;
-    if(m_device->QueryInterface(IID_IDeckLinkProfileAttributes, attrs.putVoid())
-           == S_OK
-       && attrs
-       && attrs->GetFlag(BMDDeckLinkSupportsInputFormatDetection, &detect)
-              == S_OK
-       && detect)
-      m_enableFlags |= bmdVideoInputEnableFormatDetection;
-  }
-
   if(m_input->EnableVideoInput(
-         m_settings.displayMode, m_settings.pixelFormat, m_enableFlags)
+         m_settings.displayMode, m_settings.pixelFormat,
+         bmdVideoInputFlagDefault)
      != S_OK)
   {
     qWarning() << "DeckLink input: EnableVideoInput failed";
@@ -386,12 +316,8 @@ void DeckLinkInputBackend::start()
 {
   if(m_started || !m_input)
     return;
-  auto* cb = new InputCallback(
-      m_input.get(), m_settings, &m_strategy, m_ring, m_frameByteSize,
-      m_rowBytes, m_height);
-  cb->m_enabledFlags = m_enableFlags;
-  m_cbStopping = &cb->stopping;
-  m_callback = ComPtr<IDeckLinkInputCallback>(cb); // adopt ref
+  m_callback = ComPtr<IDeckLinkInputCallback>(new InputCallback(
+      &m_strategy, m_ring, m_frameByteSize, m_rowBytes, m_height)); // adopt ref
   if(m_input->SetCallback(m_callback.get()) != S_OK)
   {
     qWarning() << "DeckLink: SetCallback failed";
@@ -410,8 +336,6 @@ void DeckLinkInputBackend::start()
 
 void DeckLinkInputBackend::stop()
 {
-  if(m_cbStopping)
-    m_cbStopping->store(true, std::memory_order_release);
   if(m_input && m_started)
   {
     // Sample order: stop + flush + disable the input, then detach the
@@ -424,7 +348,6 @@ void DeckLinkInputBackend::stop()
     m_input->SetCallback(nullptr);
   }
   m_callback.reset();
-  m_cbStopping = nullptr;
   m_started = false;
 }
 

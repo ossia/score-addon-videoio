@@ -158,24 +158,6 @@ bool DeckLinkOutputBackend::open(score::gfx::GraphicsApi)
   m_rowBytes = rb;
   m_frameByteSize = static_cast<uint32_t>(rb) * static_cast<uint32_t>(m_height);
 
-  // RGB pixel formats need 4:4:4 signalled on the SDI wire; without this the
-  // card ships a muted/converted signal and a 4:4:4-expecting receiver sees
-  // black. The config PERSISTS in the driver, so explicitly clear it for YUV
-  // formats too (a previous RGB session must not poison a YUV one).
-  {
-    const bool rgbWire = m_settings.pixelFormat != bmdFormat8BitYUV
-                         && m_settings.pixelFormat != bmdFormat10BitYUV;
-    ComPtr<IDeckLinkConfiguration> cfg;
-    if(m_device->QueryInterface(IID_IDeckLinkConfiguration, cfg.putVoid())
-           == S_OK
-       && cfg)
-    {
-      if(cfg->SetFlag(bmdDeckLinkConfig444SDIVideoOutput, rgbWire) != S_OK
-         && rgbWire)
-        qWarning() << "DeckLink: could not enable 4:4:4 SDI output";
-    }
-  }
-
   if(m_output->EnableVideoOutput(m_settings.displayMode, bmdVideoOutputFlagDefault)
      != S_OK)
   {

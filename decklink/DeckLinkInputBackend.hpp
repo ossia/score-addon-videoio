@@ -4,7 +4,6 @@
 
 #include <Gfx/Graph/DMACaptureInputNode.hpp>
 
-#include <atomic>
 #include <cstdint>
 
 namespace score::gfx::interop
@@ -73,9 +72,6 @@ private:
   int m_height{};
   int m_rowBytes{};
   uint32_t m_frameByteSize{};
-  BMDVideoInputFlags m_enableFlags{};
-  /// Owned by the callback; lets stop() park its re-arm logic first.
-  std::atomic<bool>* m_cbStopping{};
   bool m_started{};
 };
 
