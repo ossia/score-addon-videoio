@@ -47,9 +47,24 @@ inline bool mwEventWait(MwEvent h, unsigned long ms) noexcept
 
 #else
 
+// The Linux SDK's WinTypes.h re-typedefs Win32 look-alikes (HANDLE as void*,
+// struct RECT, ...) that collide with the AJA SDK's own Linux compat typedefs
+// when a TU sees both (the unified VideoInput/VideoOutput enumerators do).
+// Shadow-rename the conflicting identifiers for the duration of the include —
+// the MWCapture prototypes then use the renamed types consistently.
+#define HANDLE MW_WINTYPES_HANDLE
+#define RECT MW_WINTYPES_RECT
+#define PRECT MW_WINTYPES_PRECT
+#define LPRECT MW_WINTYPES_LPRECT
+
 #include <LibMWCapture/MWCapture.h>
 
 #include <MWFOURCC.h>
+
+#undef HANDLE
+#undef RECT
+#undef PRECT
+#undef LPRECT
 
 namespace Gfx::Magewell
 {
