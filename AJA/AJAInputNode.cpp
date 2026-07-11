@@ -247,39 +247,63 @@ private:
         }
       }
 
-      AUTOCIRCULATE_STATUS status;
-      if(!card->AutoCirculateGetStatus(ch, status))
-        continue;
-      if(!status.IsRunning() || !status.HasAvailableInputFrame())
-        continue;
+      // Drain the input AC ring to the FRESHEST frame. One-transfer-per-VBI
+      // lets any backlog accumulated during strategy init persist forever as
+      // constant end-to-end latency (one VBI in, one frame out — the level
+      // never falls). Measured: 3-4 stuck frames on the DVP path (+~58 ms
+      // at 60p), 0-1 on tier-3 (the 88-vs-95 ms run variance). Every
+      // available frame must still be TRANSFERRED to advance AC, but only
+      // the newest is ingested/published; stale ones land in the same slot
+      // and are overwritten.
+      int drained = 0;
+      for(;;)
+      {
+        AUTOCIRCULATE_STATUS status;
+        if(!card->AutoCirculateGetStatus(ch, status))
+          break;
+        if(!status.IsRunning() || !status.HasAvailableInputFrame())
+          break;
+        if(++drained > 8) // safety: never spin unbounded inside a VBI slot
+          break;
 
-      void* sysmem = m_strategy->slotBuffer(writeIdx);
-      if(!sysmem)
-        continue;
+        void* sysmem = m_strategy->slotBuffer(writeIdx);
+        if(!sysmem)
+          break;
 
-      AUTOCIRCULATE_TRANSFER xfer;
-      xfer.SetVideoBuffer(
-          reinterpret_cast<ULWord*>(sysmem), m_session.frameSize());
-      m_session.attachAncToTransfer(xfer);
+        AUTOCIRCULATE_TRANSFER xfer;
+        xfer.SetVideoBuffer(
+            reinterpret_cast<ULWord*>(sysmem), m_session.frameSize());
+        m_session.attachAncToTransfer(xfer);
 
-      if(!card->AutoCirculateTransfer(ch, xfer))
-        continue;
+        if(!card->AutoCirculateTransfer(ch, xfer))
+          break;
 
-      m_session.readPerFrameMetadata(xfer);
+        m_session.readPerFrameMetadata(xfer);
 
-      // The strategy DMAs sysmem -> GPU texture. Wraps dvpBegin/End
-      // internally and CPU-blocks until the DMA completes - so when
-      // ingestFrame returns, the texture's bytes are consistent and
-      // the renderer can sample on its next tick.
-      if(!m_strategy->ingestFrame(writeIdx))
-        continue;
+        // Only the newest frame reaches the GPU: skip ingest when ANOTHER
+        // complete frame is already waiting behind this one. Decided on a
+        // fresh post-transfer status — the input ring's buffer level counts
+        // the frame currently being captured into, so the pre-transfer
+        // level cannot distinguish "one ready" from "one ready + backlog".
+        AUTOCIRCULATE_STATUS after;
+        if(card->AutoCirculateGetStatus(ch, after) && after.IsRunning()
+           && after.HasAvailableInputFrame())
+          continue;
 
-      // Publish: bump frame id, store slot. Renderer polls.
-      ++frameId;
-      m_ring.latestSlot.store(writeIdx, std::memory_order_release);
-      m_ring.latestFrameId.store(frameId, std::memory_order_release);
+        // The strategy DMAs sysmem -> GPU texture. Wraps dvpBegin/End
+        // internally and CPU-blocks until the DMA completes - so when
+        // ingestFrame returns, the texture's bytes are consistent and
+        // the renderer can sample on its next tick.
+        if(!m_strategy->ingestFrame(writeIdx))
+          continue;
 
-      writeIdx = (writeIdx + 1) % slots;
+        // Publish: bump frame id, store slot. Renderer polls.
+        ++frameId;
+        m_ring.latestSlot.store(writeIdx, std::memory_order_release);
+        m_ring.latestFrameId.store(frameId, std::memory_order_release);
+
+        writeIdx = (writeIdx + 1) % slots;
+      }
     }
   }
 
