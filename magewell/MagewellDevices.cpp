@@ -49,8 +49,11 @@ std::vector<DeviceInfo> enumerateDevices()
     // distinguish them by the card's own channel index (1-based, matching
     // Magewell's utilities and the bracket labels).
     name += " — input " + std::to_string(int(info.byChannelIndex) + 1);
-    if(info.szBoardSerialNo[0] != '\0')
-      name += " (" + std::string(info.szBoardSerialNo) + ")";
+    std::string serial(info.szBoardSerialNo);
+    while(!serial.empty() && (serial.back() == ' ' || serial.back() == '\0'))
+      serial.pop_back();
+    if(!serial.empty())
+      name += " (" + serial + ")";
     dev.displayName = name.empty() ? ("Magewell channel " + std::to_string(i))
                                    : std::move(name);
 
