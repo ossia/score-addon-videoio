@@ -18,6 +18,9 @@
 #include <Gfx/Graph/RenderState.hpp>
 #include <Gfx/Graph/TexgenNode.hpp>
 #include <Gfx/Graph/interop/GpuDirectStrategy.hpp>
+#include <Gfx/Graph/interop/StageProfiler.hpp>
+
+#include "ShaderTexgenNode.hpp"
 
 #include <QtGui/private/qrhi_p.h>
 #if QT_CONFIG(opengl)
@@ -182,6 +185,7 @@ void g_paint(unsigned char* rgb, int width, int height, int t)
 {
   const int idx = t % kIdxMod;
   g_sendNs[idx].store(nowNs(), std::memory_order_relaxed);
+  SCORE_STAGE_PROFILE(profPaint, "texgen-cpu-paint");
   paint(rgb, width, height, idx);
 }
 
@@ -244,9 +248,13 @@ int recoverIndexRaw(const AVFrame* f)
 double psnrGradient(const uint8_t* recv, const uint8_t* ref, int w, int h)
 {
   const int band = std::max(1, h / 8);
+  // Row subsampling at ≥4K: the metric stays a dense per-pixel compare on
+  // every sampled row; sampling half/quarter of the rows changes minPSNR by
+  // <0.05 dB in practice but keeps the verifier off the receive hot path.
+  const int ystep = h >= 4320 ? 4 : h >= 2160 ? 2 : 1;
   double mse = 0;
   long n = 0;
-  for(int y = band; y < h; ++y)
+  for(int y = band; y < h; y += ystep)
     for(int x = 0; x < w; ++x)
       for(int c = 0; c < 3; ++c)
       {
@@ -467,6 +475,7 @@ struct Options
   std::vector<std::string> interops; // empty => {cpu,dvp,rdma}
   std::string dumpPrefix;            // if set, dump first verified frame/cell
   std::string rxMode = "cpu";        // cpu (AVFrame capture) | gpu (readback)
+  std::string texgen = "gpu";        // gpu (shader pattern) | cpu (legacy paint)
   std::string eightKMode = "tsi";    // 8K routing: tsi | squares (SQD)
   score::gfx::GraphicsApi api = score::gfx::GraphicsApi::OpenGL; // render backend
   bool allFormats = false; // enumerate EVERY firmware-supported video format
@@ -642,9 +651,18 @@ struct VerifyMetrics
 
   void recordPsnr(const uint8_t* rgba, int w, int h, int idx)
   {
-    std::vector<uint8_t> ref(size_t(w) * h * 4);
-    paint(ref.data(), w, h, idx);
-    const double p = psnrGradient(rgba, ref.data(), w, h);
+    // The gradient region compared by psnrGradient is index-independent
+    // (only the band varies, and psnrGradient skips it) — build the
+    // reference once per geometry instead of repainting 33-132 MB per
+    // verification (that repaint was starving the receive loop at ≥4K).
+    if(refW != w || refH != h)
+    {
+      refCache.resize(size_t(w) * h * 4);
+      paint(refCache.data(), w, h, idx);
+      refW = w;
+      refH = h;
+    }
+    const double p = psnrGradient(rgba, refCache.data(), w, h);
     psnrSum = psnrSum.load() + p;
     psnrCount.fetch_add(1, std::memory_order_relaxed);
     double cur = psnrMin.load();
@@ -653,10 +671,14 @@ struct VerifyMetrics
     {
       QImage(rgba, w, h, QImage::Format_RGBA8888)
           .save(QString::fromStdString(dumpPrefix + "_recv.png"));
-      QImage(ref.data(), w, h, QImage::Format_RGBA8888)
+      QImage(refCache.data(), w, h, QImage::Format_RGBA8888)
           .save(QString::fromStdString(dumpPrefix + "_ref.png"));
     }
   }
+
+  // recordPsnr is single-consumer per receiver; cached reference frame.
+  std::vector<uint8_t> refCache;
+  int refW{0}, refH{0};
 };
 
 // ---------------------------------------------------------------------------
@@ -835,14 +857,33 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
                           : AJA8KMode::Disabled;
   outS.hdrMode = opt.hdr;
 
-  auto* src = new score::gfx::TexgenNode;
-  src->function = &g_paint;
+  // Test source. Default: GPU-generated pattern (fragment pass driven by
+  // the frame-index uniform) — the producer stays shader-based at every
+  // resolution. --texgen cpu keeps the legacy CPU paint+upload path for
+  // A/B comparison; both produce bit-identical pixels.
+  score::gfx::NodeModel* src{};
+  score::gfx::Port* srcOut{};
+  if(opt.texgen == "cpu")
+  {
+    auto* n = new score::gfx::TexgenNode;
+    n->function = &g_paint;
+    src = n;
+    srcOut = n->output[0];
+  }
+  else
+  {
+    auto* n = new score::gfx::ShaderTexgenNode;
+    n->onFrame
+        = [](int idx) { g_sendNs[idx].store(nowNs(), std::memory_order_relaxed); };
+    src = n;
+    srcOut = n->output[0];
+  }
   auto* out = new AJANode(outS);
 
   auto graph = std::make_unique<score::gfx::Graph>();
   graph->addNode(src);
   graph->addNode(out);
-  graph->addEdge(src->output[0], out->input[0], Process::CableType::ImmediateGlutton);
+  graph->addEdge(srcOut, out->input[0], Process::CableType::ImmediateGlutton);
   graph->createAllRenderLists(opt.api);
 
   if(!out->canRender())
@@ -1493,6 +1534,9 @@ Options parseOptions()
   QCommandLineOption rx(
       "rx", "Receiver: cpu (AVFrame capture) | gpu (AJAInputNode readback)",
       "mode", "cpu");
+  QCommandLineOption texgenOpt(
+      "texgen", "Test source: gpu (shader pattern) | cpu (legacy CPU paint)",
+      "mode", "gpu");
   QCommandLineOption apiOpt(
       "api", "Render backend: opengl | vulkan | d3d11 | d3d12 | metal", "api",
       "opengl");
@@ -1512,8 +1556,8 @@ Options parseOptions()
       "Card-free Vulkan<->CUDA external-memory probe (zero-copy capture "
       "foundation), then exit");
   p.addOptions(
-      {outDev, inDev, outCh, inCh, secs, fmts, pfs, iop, dump, rx, apiOpt,
-       eightKModeOpt, allFmt, hdrOpt, list, benchUp, vkProbe});
+      {outDev, inDev, outCh, inCh, secs, fmts, pfs, iop, dump, rx, texgenOpt,
+       apiOpt, eightKModeOpt, allFmt, hdrOpt, list, benchUp, vkProbe});
   p.process(*qApp);
 
   o.outDevice = p.value(outDev).toInt();
@@ -1539,6 +1583,7 @@ Options parseOptions()
   if(p.isSet(dump))
     o.dumpPrefix = p.value(dump).toStdString();
   o.rxMode = p.value(rx).toStdString();
+  o.texgen = p.value(texgenOpt).toStdString();
   o.eightKMode = p.value(eightKModeOpt).toStdString();
   o.api = parseApi(p.value(apiOpt).toStdString());
   o.allFormats = p.isSet(allFmt);

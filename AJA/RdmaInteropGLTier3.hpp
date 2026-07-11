@@ -43,7 +43,13 @@ struct RdmaInteropGLTier3 final : score::gfx::interop::GpuDirectStrategy
     oc.width = c.width;
     oc.height = c.height;
     oc.frameByteSize = c.frameByteSize;
-    oc.slotCount = 2;
+    // BAR1 budget: every pinned bounce occupies the GPU's PCIe BAR1
+    // aperture (256 MiB on most Quadros) for the card's P2P access. At
+    // large rasters (UHD2/8K = 66 MB frames) double-buffering the output
+    // bounce would starve the capture side's pins. One slot is race-free
+    // here because AutoCirculateTransfer is a blocking DMA — the card has
+    // finished reading the bounce before submit returns.
+    oc.slotCount = c.frameByteSize >= (32u << 20) ? 1 : 2;
     oc.debugName = "AJA-RDMA-GL-Storage";
     oc.encoderFactory = [fmt = m_targetFormat] {
       return makeTier3Encoder(fmt);

@@ -3,6 +3,7 @@
 #include <AJA/AjaFormatMap.hpp>
 #include <AJA/Tier3Common.hpp>
 #include <Gfx/Graph/encoders/ColorSpaceOut.hpp>
+#include <Gfx/Graph/interop/StageProfiler.hpp>
 
 extern "C" {
 #include <libavutil/pixfmt.h>
@@ -302,6 +303,12 @@ bool AjaOutputBackend::cardCanAccept()
     return false;
   if(m_acStarted && !status.CanAcceptMoreOutputFrames())
     return false;
+  // Cap in-flight depth below the full AC ring: the pump stuffs the ring
+  // whenever we accept, so accepting until ring-full trades ~4 extra
+  // frames of end-to-end latency for nothing — 2 queued frames already
+  // sustain rate (transfer completes well inside a frame period).
+  if(m_acStarted && status.GetBufferLevel() >= 3)
+    return false;
   return true;
 }
 
@@ -339,10 +346,13 @@ bool AjaOutputBackend::submitFrame(void* framePtr)
   }
   ++m_outputFrame;
 
-  if(!m_card->AutoCirculateTransfer(m_channel, m_xfer))
   {
-    qWarning() << "AJA: AutoCirculateTransfer failed";
-    return false;
+    SCORE_STAGE_PROFILE(profAcXfer, "aja-out-ac-transfer");
+    if(!m_card->AutoCirculateTransfer(m_channel, m_xfer))
+    {
+      qWarning() << "AJA: AutoCirculateTransfer failed";
+      return false;
+    }
   }
   if(!m_acStarted && ++m_acGoodXfers >= 3)
   {

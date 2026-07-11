@@ -67,11 +67,15 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
   CudaP2PContextHandle m_cudaCtx{};
   score::gfx::interop::GpuRingBuffer m_ring;
 
-  static constexpr std::size_t kSlotCount = 3;
-  std::array<bool, kSlotCount> m_dmaLocked{};
+  static constexpr std::size_t kMaxSlots = 3;
+  /// Runtime slot count: 3 normally; 2 at ≥32 MB frames so the pinned
+  /// bounces (which occupy the GPU's 256 MiB BAR1 aperture, shared with
+  /// the output side's bounce) still fit at UHD2/8K rasters.
+  std::size_t m_slotCount = kMaxSlots;
+  std::array<bool, kMaxSlots> m_dmaLocked{};
   /// CUDA-owned (cuMemAlloc) DMA targets, parallel to the ring slots —
   /// the pointers AJA's AC actually writes; see class doc.
-  std::array<void*, kSlotCount> m_bounce{};
+  std::array<void*, kMaxSlots> m_bounce{};
 
   // Single-producer single-consumer slot handoff. Capture thread stores
   // the latest filled slot; render thread does an acquire-exchange to
@@ -83,6 +87,7 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
   bool init(const score::gfx::interop::GpuDirectCaptureStrategyConfig& c) override
   {
     cfg = c;
+    m_slotCount = cfg.frameByteSize >= (32u << 20) ? 2 : kMaxSlots;
     if(!cfg.rhi || !m_card || !cfg.outputTexture)
       return false;
     if(!cuda_p2p_available())
@@ -121,7 +126,7 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
 
     score::gfx::interop::GpuRingBufferConfig rcfg{
         cfg.rhi, m_cudaCtx, cfg.frameByteSize,
-        static_cast<int>(kSlotCount), "AJA-RDMA-GL-Capture",
+        static_cast<int>(m_slotCount), "AJA-RDMA-GL-Capture",
         /*glRegisterOnly=*/true};
     if(!m_ring.create(rcfg))
     {
@@ -130,7 +135,7 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
       return false;
     }
 
-    for(std::size_t i = 0; i < kSlotCount; ++i)
+    for(std::size_t i = 0; i < m_slotCount; ++i)
     {
       // GPUDirect P2P: AJA's AC DMAs the captured frame straight into a
       // CUDA-owned bounce buffer (inRDMA=true only pins CUDA-allocator
@@ -158,7 +163,7 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
 
   void release() override
   {
-    for(std::size_t i = 0; i < kSlotCount; ++i)
+    for(std::size_t i = 0; i < m_slotCount; ++i)
     {
       if(m_dmaLocked[i] && m_bounce[i])
         ajaDmaUnlock(m_card, m_bounce[i], cfg.frameByteSize);
@@ -186,7 +191,7 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
     // inRDMA=true, the pointer passed to AutoCirculateTransfer is the
     // GPU device pointer, NOT a sysmem buffer. AJA's AC dispatches on
     // the lock flag internally.
-    return (i < kSlotCount) ? m_bounce[i] : nullptr;
+    return (i < m_slotCount) ? m_bounce[i] : nullptr;
   }
 
   bool ingestFrame(std::size_t i) override
