@@ -134,8 +134,27 @@ public:
                                     != m_inputSettings.displayMode;
     const bool colorDiffers
         = (wantRGB && wireYUV && !wireRGB) || (!wantRGB && wireRGB && !wireYUV);
+    // A colorspace mismatch that survives a few re-arms is the card telling
+    // us what the wire actually carries (e.g. Studio 4K downgrades RGB modes
+    // to a YCbCr wire): keep capturing what it delivers and let downstream
+    // verification judge, instead of starving the stream with re-arms.
+    if(colorDiffers && m_formatRearms >= kMaxFormatRearms)
+    {
+      if(m_formatRearms == kMaxFormatRearms)
+      {
+        ++m_formatRearms;
+        qWarning() << "DeckLink input: wire colorspace stays"
+                   << (wireYUV ? "YCbCr" : "RGB") << "despite requested format;"
+                   << "accepting the card-converted signal";
+      }
+      return S_OK;
+    }
     if(modeDiffers || colorDiffers)
+    {
+      if(colorDiffers)
+        ++m_formatRearms;
       rearm("format-change");
+    }
     return S_OK;
   }
 
@@ -209,6 +228,10 @@ private:
   // while unlocked, so the streak advances even with no signal.
   static constexpr int kRearmAfterNoSource = 25;
   static constexpr int kMaxRearms = 32;
+  /// Colorspace-mismatch re-arms get a much smaller budget: if the wire
+  /// doesn't flip after these, it never will (card-imposed conversion).
+  static constexpr int kMaxFormatRearms = 3;
+  int m_formatRearms{0};
 
   /// Re-acquire the signal: pause -> re-enable (same fixed mode) -> flush ->
   /// start, per the SDK Capture sample. Runs on the SDK callback thread, which
