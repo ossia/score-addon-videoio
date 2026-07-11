@@ -41,7 +41,12 @@ bool MagewellInputBackend::open()
   MWRefreshDevice();
 
   // Resolve the channel index to a device path, then open the channel.
+  // (UTF-16 on Windows, plain char on Linux — the SDK signature differs.)
+#if defined(_WIN32)
   WCHAR path[256] = {0};
+#else
+  char path[256] = {0};
+#endif
   if(MWGetDevicePath(m_settings.deviceIndex, path) != MW_SUCCEEDED)
   {
     qWarning() << "Magewell input: MWGetDevicePath failed for channel"
@@ -145,25 +150,25 @@ void MagewellInputBackend::start()
         buf = nullptr;
       }
     }
-    if(m_notifyEvent)
+    if(m_notifyEvent != mwNoEvent)
     {
-      CloseHandle(m_notifyEvent);
-      m_notifyEvent = nullptr;
+      mwEventClose(m_notifyEvent);
+      m_notifyEvent = mwNoEvent;
     }
-    if(m_captureEvent)
+    if(m_captureEvent != mwNoEvent)
     {
-      CloseHandle(m_captureEvent);
-      m_captureEvent = nullptr;
+      mwEventClose(m_captureEvent);
+      m_captureEvent = mwNoEvent;
     }
   };
 
   // Two auto-reset events: one signalled per buffered frame (notify), one
   // signalled when a MWCaptureVideoFrameToVirtualAddress transfer completes.
-  m_notifyEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-  m_captureEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-  if(!m_notifyEvent || !m_captureEvent)
+  m_notifyEvent = mwEventCreate();
+  m_captureEvent = mwEventCreate();
+  if(m_notifyEvent == mwNoEvent || m_captureEvent == mwNoEvent)
   {
-    qWarning() << "Magewell input: CreateEvent failed";
+    qWarning() << "Magewell input: event creation failed";
     failStart();
     return;
   }
@@ -229,15 +234,15 @@ void MagewellInputBackend::stop()
     m_channel = nullptr;
   }
 
-  if(m_notifyEvent)
+  if(m_notifyEvent != mwNoEvent)
   {
-    CloseHandle(m_notifyEvent);
-    m_notifyEvent = nullptr;
+    mwEventClose(m_notifyEvent);
+    m_notifyEvent = mwNoEvent;
   }
-  if(m_captureEvent)
+  if(m_captureEvent != mwNoEvent)
   {
-    CloseHandle(m_captureEvent);
-    m_captureEvent = nullptr;
+    mwEventClose(m_captureEvent);
+    m_captureEvent = mwNoEvent;
   }
   m_started = false;
 }
@@ -256,7 +261,7 @@ void MagewellInputBackend::runLoop()
       continue;
 
     // Wait for the next buffered frame (auto-reset notify event).
-    if(WaitForSingleObject(m_notifyEvent, kTimeoutMs) != WAIT_OBJECT_0)
+    if(!mwEventWait(m_notifyEvent, kTimeoutMs))
       continue; // no signal yet; keep polling
 
     ULONGLONG ullStatusBits = 0;
@@ -297,7 +302,7 @@ void MagewellInputBackend::runLoop()
       continue;
 
     // Wait for the transfer to complete (auto-reset capture event).
-    if(WaitForSingleObject(m_captureEvent, kTimeoutMs) != WAIT_OBJECT_0)
+    if(!mwEventWait(m_captureEvent, kTimeoutMs))
       continue;
 
     strat->ingestFrame(writeIdx);

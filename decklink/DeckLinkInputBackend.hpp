@@ -19,6 +19,10 @@ struct DeckLinkInputSettings
   int deviceIndex{0};
   BMDDisplayMode displayMode{bmdModeHD1080p5994};
   BMDPixelFormat pixelFormat{bmdFormat8BitYUV};
+  /// Physical input connector (bmdVideoConnectionSDI / ...HDMI / ...); 0 keeps
+  /// the card's currently-configured connection. Cards with multiple inputs
+  /// (e.g. DeckLink Studio 4K) need this to pick SDI vs HDMI capture.
+  BMDVideoConnection connection{BMDVideoConnection(0)};
 };
 
 /**
