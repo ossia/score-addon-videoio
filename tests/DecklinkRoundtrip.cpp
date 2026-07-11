@@ -542,6 +542,7 @@ void printMatrix(const std::vector<Result>& rows)
 int main(int argc, char** argv)
 {
   qputenv("SCORE_DISABLE_AUDIOPLUGINS", "1");
+  qputenv("SCORE_AUDIO_BACKEND", "dummy");
 #if defined(Q_OS_LINUX)
   if(qEnvironmentVariableIsEmpty("QT_XCB_GL_INTEGRATION"))
     qputenv("QT_XCB_GL_INTEGRATION", "xcb_egl"); // match src/app/main.cpp
