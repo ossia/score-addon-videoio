@@ -45,6 +45,10 @@ std::vector<DeviceInfo> enumerateDevices()
     dev.canOutput = false;
 
     std::string name(info.szProductName);
+    // Multi-channel cards (Quad HDMI, ...) enumerate as N identical products;
+    // distinguish them by the card's own channel index (1-based, matching
+    // Magewell's utilities and the bracket labels).
+    name += " — input " + std::to_string(int(info.byChannelIndex) + 1);
     if(info.szBoardSerialNo[0] != '\0')
       name += " (" + std::string(info.szBoardSerialNo) + ")";
     dev.displayName = name.empty() ? ("Magewell channel " + std::to_string(i))

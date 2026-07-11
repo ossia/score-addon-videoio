@@ -419,6 +419,33 @@ Result runCell(
   r.mode = vm.name;
   r.pixfmt = pf.name;
 
+  // Honest SKIP for combos the hardware can't do (e.g. Studio 4K has no
+  // 10BitRGB on HDMI): probe both directions before spinning up a graph, so
+  // an impossible cell doesn't run and report a misleading black FAIL.
+  {
+    ComPtr<IDeckLink> dev = openDevice(opt.device);
+    ComPtr<IDeckLinkInput> din;
+    ComPtr<IDeckLinkOutput> dout;
+    if(dev
+       && dev->QueryInterface(IID_IDeckLinkInput, din.putVoid()) == S_OK
+       && dev->QueryInterface(IID_IDeckLinkOutput, dout.putVoid()) == S_OK)
+    {
+      BMDDisplayMode actual{};
+      bool inOk = false, outOk = false;
+      din->DoesSupportVideoMode(
+          cn.conn, vm.mode, pf.fmt, bmdNoVideoInputConversion,
+          bmdSupportedVideoModeDefault, &actual, &inOk);
+      dout->DoesSupportVideoMode(
+          cn.conn, vm.mode, pf.fmt, bmdNoVideoOutputConversion,
+          bmdSupportedVideoModeDefault, &actual, &outOk);
+      if(!inOk || !outOk)
+      {
+        r.status = !outOk ? "SKIP(hw-out)" : "SKIP(hw-in)";
+        return r;
+      }
+    }
+  }
+
   DeckLinkOutputSettings outS;
   outS.deviceIndex = opt.device;
   outS.displayMode = vm.mode;
