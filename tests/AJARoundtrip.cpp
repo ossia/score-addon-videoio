@@ -1529,6 +1529,7 @@ int main(int argc, char** argv)
   // Most-minimal app: no audio/CLAP plugins (avoids the CLAP teardown crash),
   // dummy audio backend.
   qputenv("SCORE_DISABLE_AUDIOPLUGINS", "1");
+  qputenv("SCORE_SANITIZE_SKIP_CHECKS", "1"); // no first-run modal in headless runs
   qputenv("SCORE_AUDIO_BACKEND", "dummy");
 
   score::MinimalGUIApplication app(argc, argv);
