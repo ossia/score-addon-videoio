@@ -20,6 +20,8 @@ extern "C" {
 
 #include <QDebug>
 
+#include <cstdlib>
+
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -175,6 +177,22 @@ public:
       return;
     if(m_thread.joinable())
       m_thread.join();
+    // Ground-truth capture cadence: the input card's own frame counter
+    // (acFramesProcessed = frames the card DMA-captured off the wire since
+    // AutoCirculateStart), independent of the host readback rate. Matches
+    // ntv2capture.cpp:503. SCORE_AJA_ACSTATS=1.
+    if(std::getenv("SCORE_AJA_ACSTATS"))
+    {
+      if(auto* card = m_session.card())
+      {
+        AUTOCIRCULATE_STATUS st;
+        if(card->AutoCirculateGetStatus(m_session.masterChannel(), st))
+          qDebug().nospace()
+              << "AJA-ACSTATS in(gpu): processed=" << st.GetProcessedFrameCount()
+              << " dropped=" << st.GetDroppedFrameCount()
+              << " level=" << st.GetBufferLevel();
+      }
+    }
   }
 
 private:
