@@ -243,6 +243,14 @@ int recoverIndexRaw(const AVFrame* f)
   return unlvl(uint8_t(sr / n)) | (unlvl(uint8_t(sg / n)) << 2) | (unlvl(uint8_t(sb / n)) << 4);
 }
 
+// Row step shared by frameToRgba and psnrGradient so the converter only
+// touches the rows the metric reads (a full scalar UHD conversion costs
+// 40-80 ms — enough to overflow the capture queue every verification).
+inline int verifyRowStep(int h)
+{
+  return h >= 4320 ? 4 : h >= 2160 ? 2 : 1;
+}
+
 // PSNR over the gradient region (skip the band), comparing a converted-to-RGB
 // received frame against the regenerated reference for its decoded index.
 double psnrGradient(const uint8_t* recv, const uint8_t* ref, int w, int h)
@@ -251,10 +259,12 @@ double psnrGradient(const uint8_t* recv, const uint8_t* ref, int w, int h)
   // Row subsampling at ≥4K: the metric stays a dense per-pixel compare on
   // every sampled row; sampling half/quarter of the rows changes minPSNR by
   // <0.05 dB in practice but keeps the verifier off the receive hot path.
-  const int ystep = h >= 4320 ? 4 : h >= 2160 ? 2 : 1;
+  // The grid starts at a multiple of ystep because frameToRgba only
+  // converts those rows.
+  const int ystep = verifyRowStep(h);
   double mse = 0;
   long n = 0;
-  for(int y = band; y < h; y += ystep)
+  for(int y = ((band + ystep - 1) / ystep) * ystep; y < h; y += ystep)
     for(int x = 0; x < w; ++x)
       for(int c = 0; c < 3; ++c)
       {
@@ -271,15 +281,17 @@ double psnrGradient(const uint8_t* recv, const uint8_t* ref, int w, int h)
 }
 
 // Convert an AVFrame to a tightly-packed RGBA8 buffer. Returns false for
-// unsupported formats.
+// unsupported formats. Only every verifyRowStep(h)-th row is converted;
+// psnrGradient walks the same grid, other rows stay unspecified.
 bool frameToRgba(const AVFrame* f, std::vector<uint8_t>& rgba)
 {
   const int w = f->width, h = f->height;
+  const int ystep = verifyRowStep(h);
   rgba.resize(size_t(w) * h * 4);
   switch(f->format)
   {
     case AV_PIX_FMT_UYVY422:
-      for(int y = 0; y < h; ++y)
+      for(int y = 0; y < h; y += ystep)
       {
         const uint8_t* src = f->data[0] + size_t(y) * f->linesize[0];
         uint8_t* dst = rgba.data() + size_t(y) * w * 4;
@@ -297,7 +309,7 @@ bool frameToRgba(const AVFrame* f, std::vector<uint8_t>& rgba)
     case AV_PIX_FMT_BGRA:
     case AV_PIX_FMT_ARGB:
     case AV_PIX_FMT_ABGR:
-      for(int y = 0; y < h; ++y)
+      for(int y = 0; y < h; y += ystep)
       {
         const uint8_t* src = f->data[0] + size_t(y) * f->linesize[0];
         uint8_t* dst = rgba.data() + size_t(y) * w * 4;
