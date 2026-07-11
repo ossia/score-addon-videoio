@@ -19,7 +19,7 @@ namespace Gfx::Magewell
 struct MagewellInputSettings
 {
   int deviceIndex{0};        ///< channel index (MWGetDevicePath)
-  DWORD fourcc{MWFOURCC_UYVY}; ///< capture FOURCC (pixel format)
+  std::uint32_t fourcc{MWFOURCC_UYVY}; ///< capture FOURCC (pixel format)
 };
 
 /**
@@ -77,14 +77,14 @@ private:
   HNOTIFY m_notify{0};
 
   static constexpr std::size_t kMaxSlots = 3;
-  std::array<LPBYTE, kMaxSlots> m_pinnedBuffers{}; ///< pinned slot ptrs (for unpin)
+  std::array<unsigned char*, kMaxSlots> m_pinnedBuffers{}; ///< pinned slot ptrs (for unpin)
 
   std::thread m_thread;
   std::atomic<bool> m_running{false};
 
   int m_width{};
   int m_height{};
-  DWORD m_stride{};
+  std::uint32_t m_stride{};
   uint32_t m_frameByteSize{};
   bool m_captureStarted{}; ///< MWStartVideoCapture succeeded
   bool m_started{};

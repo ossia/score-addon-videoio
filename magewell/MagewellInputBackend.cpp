@@ -146,7 +146,7 @@ void MagewellInputBackend::start()
     {
       if(buf)
       {
-        MWUnpinVideoBuffer(m_channel, buf);
+        MWUnpinVideoBuffer(m_channel, mwBufferAddress(buf));
         buf = nullptr;
       }
     }
@@ -177,8 +177,11 @@ void MagewellInputBackend::start()
   const std::size_t slots = std::min<std::size_t>(strat->slotCount(), kMaxSlots);
   for(std::size_t i = 0; i < slots; ++i)
   {
-    auto* buf = static_cast<LPBYTE>(strat->slotBuffer(i));
-    if(buf && MWPinVideoBuffer(m_channel, buf, m_frameByteSize) == MW_SUCCEEDED)
+    auto* buf = static_cast<unsigned char*>(strat->slotBuffer(i));
+    if(buf
+       && MWPinVideoBuffer(
+              m_channel, mwBufferAddress(buf), m_frameByteSize)
+              == MW_SUCCEEDED)
       m_pinnedBuffers[i] = buf;
   }
 
@@ -226,7 +229,7 @@ void MagewellInputBackend::stop()
     {
       if(buf)
       {
-        MWUnpinVideoBuffer(m_channel, buf);
+        MWUnpinVideoBuffer(m_channel, mwBufferAddress(buf));
         buf = nullptr;
       }
     }
@@ -249,7 +252,7 @@ void MagewellInputBackend::stop()
 
 void MagewellInputBackend::runLoop()
 {
-  constexpr DWORD kTimeoutMs = 1000;
+  constexpr unsigned long kTimeoutMs = 1000;
   std::size_t writeIdx = 0;
   while(m_running.load(std::memory_order_acquire))
   {
@@ -264,7 +267,7 @@ void MagewellInputBackend::runLoop()
     if(!mwEventWait(m_notifyEvent, kTimeoutMs))
       continue; // no signal yet; keep polling
 
-    ULONGLONG ullStatusBits = 0;
+    unsigned long long ullStatusBits = 0;
     if(MWGetNotifyStatus(m_channel, m_notify, &ullStatusBits) != MW_SUCCEEDED)
       continue;
     if(!(ullStatusBits & MWCAP_NOTIFY_VIDEO_FRAME_BUFFERED))
@@ -274,7 +277,7 @@ void MagewellInputBackend::runLoop()
     if(MWGetVideoBufferInfo(m_channel, &binfo) != MW_SUCCEEDED)
       continue;
 
-    auto* dst = static_cast<LPBYTE>(strat->slotBuffer(writeIdx));
+    auto* dst = static_cast<unsigned char*>(strat->slotBuffer(writeIdx));
     if(!dst)
       continue;
 
@@ -287,7 +290,7 @@ void MagewellInputBackend::runLoop()
               : MWCAP_VIDEO_COLOR_FORMAT_YUV709;
     if(MWCaptureVideoFrameToVirtualAddressEx(
            m_channel, binfo.iNewestBufferedFullFrame, dst, m_frameByteSize,
-           m_stride, FALSE, (MWCAP_PTR64)0, m_settings.fourcc, m_width, m_height,
+           m_stride, /*bBottomUp*/ 0, (MWCAP_PTR64)0, m_settings.fourcc, m_width, m_height,
            /*dwProcessSwitchs*/ 0, /*cyParitalNotify*/ 0,
            /*hOSDImage*/ (HOSD)0, /*pOSDRects*/ nullptr, /*cOSDRects*/ 0,
            // Neutral processing amplitudes per the SDK ranges: contrast
