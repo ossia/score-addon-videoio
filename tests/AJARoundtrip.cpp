@@ -8,6 +8,7 @@
 
 #include <AJA/AJACpuCapture.hpp>
 #include <AJA/AJAInput.hpp>
+#include <AJA/AjaFormatMap.hpp>
 #include <AJA/AJAInputNode.hpp>
 #include <AJA/AJAOutput.hpp>
 #include <AJA/AJAOutputNode.hpp>
@@ -1084,6 +1085,17 @@ int runSweep(const Options& opt)
         r.videoFormat = vf.name; r.pixelFormat = pf.outName;
         r.interop = "-";
         r.status = "SKIP(fbf-unsupported)";
+        rows.push_back(r);
+        continue;
+      }
+      // The framestore may accept the layout while the playout path can't
+      // raster it (plays black) — capture/codec-only formats.
+      if(!Gfx::AJA::ajaFbfPlayoutCapable(pf.fbf))
+      {
+        Result r;
+        r.videoFormat = vf.name; r.pixelFormat = pf.outName;
+        r.interop = "-";
+        r.status = "SKIP(fbf-no-playout)";
         rows.push_back(r);
         continue;
       }
