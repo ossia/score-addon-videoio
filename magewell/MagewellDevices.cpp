@@ -55,4 +55,23 @@ std::vector<DeviceInfo> enumerateDevices()
   return out;
 }
 
+bool signalLocked(int index) noexcept
+{
+  if(!ensureMwInit())
+    return false;
+
+  char path[256]{};
+  if(MWGetDevicePath(index, path) != MW_SUCCEEDED)
+    return false;
+  HCHANNEL h = MWOpenChannelByPath(path);
+  if(!h)
+    return false;
+
+  MWCAP_VIDEO_SIGNAL_STATUS status{};
+  const bool locked = MWGetVideoSignalStatus(h, &status) == MW_SUCCEEDED
+                      && status.state == MWCAP_VIDEO_SIGNAL_LOCKED;
+  MWCloseChannel(h);
+  return locked;
+}
+
 } // namespace Gfx::Magewell
