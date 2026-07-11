@@ -60,6 +60,17 @@ struct RdmaInteropGLTier3 final : score::gfx::interop::GpuDirectStrategy
         = [card = m_card](void* gpuPtr, std::uint32_t size) {
             card->DMABufferUnlock(reinterpret_cast<ULWord*>(gpuPtr), size);
           };
+    // Playout-direction probe: the card must DMA-*read* from the pinned GPU
+    // buffer (H2C). On platforms where the AJA card and GPU sit on different
+    // PCIe host bridges, this non-posted read is blocked even though the pin
+    // and the capture-direction write both succeed — so probe it once with a
+    // real transfer into a scratch framestore before committing. Runs before
+    // AutoCirculateStart, so writing a framestore here is harmless.
+    oc.registrar.verifyTransfer
+        = [card = m_card](void* gpuPtr, std::uint32_t size) {
+            return card->DMAWriteFrame(
+                /*frameNumber=*/0, reinterpret_cast<ULWord*>(gpuPtr), size);
+          };
 
     if(!m_output.init(oc))
     {

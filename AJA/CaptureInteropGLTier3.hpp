@@ -20,24 +20,28 @@ namespace Gfx::AJA
 {
 
 /**
- * @brief OpenGL tier-3 capture: AJA SDI → P2P DMA → GL StorageBuffer →
- *        glTexSubImage2D → QRhi GL texture.
+ * @brief OpenGL tier-3 capture: AJA SDI → P2P DMA → CUDA bounce buffer →
+ *        DtoD copy → GL StorageBuffer → glTexSubImage2D → QRhi GL texture.
  *
- * Symmetric inverse of `RdmaInteropGLTier3` (the OUTPUT path). The same
+ * Symmetric inverse of `RdmaInteropGLTier3` (the OUTPUT path). The
  * `GpuRingBuffer` primitive allocates N CUDA-imported GL StorageBuffers;
- * AJA P2P-DMAs the captured frame into each slot's flat GPU pointer
- * (pinned via `DMABufferLock(inRDMA=true)`). No sysmem ring at all —
- * the SDI data lands in VRAM directly, sharing the same address space
- * as the renderer.
+ * alongside each slot sits a CUDA-owned (cuMemAlloc) bounce buffer that
+ * AJA P2P-DMAs the captured frame into (pinned via
+ * `DMABufferLock(inRDMA=true)`). The bounce hop exists because
+ * nvidia_p2p_get_pages — the kernel interface behind DMABufferLock — only
+ * pins CUDA-allocator memory, never GL-owned memory mapped into CUDA.
+ * No sysmem ring at all — the SDI data lands in VRAM directly and stays
+ * there (one VRAM->VRAM copy per consumed frame).
  *
- * Capture-thread side: `slotBuffer(i)` returns the GPU device pointer,
+ * Capture-thread side: `slotBuffer(i)` returns the bounce GPU pointer,
  * which is what `AutoCirculateTransfer.SetVideoBuffer()` accepts when
  * the buffer was registered with `inRDMA=true` (AJA's AC dispatches on
  * physical-vs-flat pointer based on the DMABufferLock flags). `ingestFrame`
  * just publishes the slot index — the data is already on the GPU.
  *
- * Render-thread side: `acquireForRender()` binds the latest slot's GL
- * buffer as `GL_PIXEL_UNPACK_BUFFER` and issues a single
+ * Render-thread side: `acquireForRender()` DtoD-copies the latest slot's
+ * bounce buffer into its GL StorageBuffer, binds that as
+ * `GL_PIXEL_UNPACK_BUFFER` and issues a single
  * `glTexSubImage2D` into `outputTexture` (whose geometry matches the
  * AJA byte layout — see CaptureInteropConfig docs). The renderer's
  * PackedDecoder then samples that texture and decodes UYVY/v210/RGBA.
@@ -65,6 +69,9 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
 
   static constexpr std::size_t kSlotCount = 3;
   std::array<bool, kSlotCount> m_dmaLocked{};
+  /// CUDA-owned (cuMemAlloc) DMA targets, parallel to the ring slots —
+  /// the pointers AJA's AC actually writes; see class doc.
+  std::array<void*, kSlotCount> m_bounce{};
 
   // Single-producer single-consumer slot handoff. Capture thread stores
   // the latest filled slot; render thread does an acquire-exchange to
@@ -93,6 +100,16 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
     if(cuda_p2p_init(&m_cudaCtx) != CUDA_P2P_SUCCESS || !m_cudaCtx)
       return false;
 
+    // Pinning a GPU buffer is necessary but NOT sufficient: on cross-host-bridge
+    // topologies the card→GPU P2P write is silently dropped even though every
+    // call reports success. Probe an actual transfer before committing so we
+    // fall back to CPU staging instead of publishing all-zero frames.
+    if(!ajaCaptureRdmaDelivers(m_card, m_cudaCtx, cfg.frameByteSize))
+    {
+      release();
+      return false;
+    }
+
     // Validate the output texture geometry matches the AJA frame size
     // up front so we don't DMA into a too-small/too-large buffer.
     if(!score::gfx::interop::validateCaptureTextureBytes(
@@ -104,7 +121,8 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
 
     score::gfx::interop::GpuRingBufferConfig rcfg{
         cfg.rhi, m_cudaCtx, cfg.frameByteSize,
-        static_cast<int>(kSlotCount), "AJA-RDMA-GL-Capture"};
+        static_cast<int>(kSlotCount), "AJA-RDMA-GL-Capture",
+        /*glRegisterOnly=*/true};
     if(!m_ring.create(rcfg))
     {
       qWarning() << "AJA RDMA-IN(GL/T3): GpuRingBuffer::create failed";
@@ -114,11 +132,19 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
 
     for(std::size_t i = 0; i < kSlotCount; ++i)
     {
-      // GPUDirect P2P: lock the GPU device pointer (inRDMA=true) so AJA's AC
-      // DMAs the captured frame straight into VRAM.
-      if(!ajaDmaLock(
-             m_card, m_ring.slot(i).gpuDevicePtr, cfg.frameByteSize,
-             /*rdma=*/true))
+      // GPUDirect P2P: AJA's AC DMAs the captured frame straight into a
+      // CUDA-owned bounce buffer (inRDMA=true only pins CUDA-allocator
+      // memory — never the ring's GL-owned buffers).
+      if(cuda_p2p_alloc_buffer(m_cudaCtx, cfg.frameByteSize, &m_bounce[i])
+             != CUDA_P2P_SUCCESS
+         || !m_bounce[i])
+      {
+        qWarning() << "AJA RDMA-IN(GL/T3): bounce alloc slot" << i << "failed:"
+                   << cuda_p2p_get_error_string(m_cudaCtx);
+        release();
+        return false;
+      }
+      if(!ajaDmaLock(m_card, m_bounce[i], cfg.frameByteSize, /*rdma=*/true))
       {
         qWarning() << "AJA RDMA-IN(GL/T3): DMABufferLock(GPU) slot" << i
                    << "failed";
@@ -134,9 +160,12 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
   {
     for(std::size_t i = 0; i < kSlotCount; ++i)
     {
-      if(m_dmaLocked[i] && m_ring.slotCount() > i)
-        ajaDmaUnlock(m_card, m_ring.slot(i).gpuDevicePtr, cfg.frameByteSize);
+      if(m_dmaLocked[i] && m_bounce[i])
+        ajaDmaUnlock(m_card, m_bounce[i], cfg.frameByteSize);
       m_dmaLocked[i] = false;
+      if(m_bounce[i] && m_cudaCtx)
+        cuda_p2p_free_buffer(m_cudaCtx, m_bounce[i]);
+      m_bounce[i] = nullptr;
     }
     m_ring.destroy();
     if(m_cudaCtx)
@@ -157,7 +186,7 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
     // inRDMA=true, the pointer passed to AutoCirculateTransfer is the
     // GPU device pointer, NOT a sysmem buffer. AJA's AC dispatches on
     // the lock flag internally.
-    return (i < m_ring.slotCount()) ? m_ring.slot(i).gpuDevicePtr : nullptr;
+    return (i < kSlotCount) ? m_bounce[i] : nullptr;
   }
 
   bool ingestFrame(std::size_t i) override
@@ -198,8 +227,25 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
     // In practice NVIDIA keeps the mapping coherent here, but do not ship the
     // Linux GL tier-3 path without revisiting this.
     auto& slot = m_ring.slot(static_cast<std::size_t>(slotIdx));
-    if(!slot.qrhiBuffer)
+    if(!slot.qrhiBuffer || !slot.cudaHandle)
       return;
+
+    // Bridge the AJA-DMA'd bounce buffer into the slot's GL storage buffer.
+    // gl_write_buffer maps the GL buffer, copies (VRAM->VRAM), and unmaps —
+    // the unmap flushes the CUDA write so the glTexSubImage2D below reads
+    // coherent data. A plain copy into a permanently-mapped buffer is NOT
+    // seen by GL (the copy lands but GL samples stale memory).
+    if(!m_bounce[static_cast<std::size_t>(slotIdx)]
+       || cuda_p2p_gl_write_buffer(
+              m_cudaCtx, slot.cudaHandle,
+              m_bounce[static_cast<std::size_t>(slotIdx)], cfg.frameByteSize)
+              != CUDA_P2P_SUCCESS)
+    {
+      qWarning() << "AJA RDMA-IN(GL/T3): bounce copy failed:"
+                 << cuda_p2p_get_error_string(m_cudaCtx);
+      return;
+    }
+
     auto nb = slot.qrhiBuffer->nativeBuffer();
     if(nb.slotCount <= 0 || !nb.objects[0])
       return;
