@@ -16,9 +16,14 @@
  * P2P into VRAM).
  */
 
+#include <Gfx/Graph/interop/CudaP2PBridge.h>
+
 #include <ntv2card.h>
 
+#include <QDebug>
+
 #include <cstdint>
+#include <vector>
 
 namespace Gfx::AJA
 {
@@ -46,6 +51,83 @@ inline void ajaDmaUnlock(
   if(card && ptr)
     card->DMABufferUnlock(
         reinterpret_cast<const ULWord*>(ptr), static_cast<ULWord>(bytes));
+}
+
+/**
+ * @brief Probe whether GPUDirect-RDMA capture (C2H) actually *delivers* data
+ *        on this card↔GPU path — not merely whether the DMA call returns
+ *        success.
+ *
+ * On platforms where the AJA card and the GPU sit on different PCIe host
+ * bridges (e.g. an AMD Threadripper with the GPU on another root complex),
+ * peer-to-peer DMA is broken even though every prerequisite *reports* success:
+ * `DMABufferLock(inRDMA=true)` succeeds (nvidia_p2p_get_pages just maps the
+ * pages) and `DMAReadFrame`/`AutoCirculateTransfer` return true, yet the card's
+ * write into GPU memory is silently dropped (a posted write that never lands).
+ * A pin-only check therefore engages a capture path that produces all-zero
+ * frames. This probe seeds a pinned GPU buffer with a sentinel, issues a real
+ * card→GPU transfer, and reads back to confirm the bytes actually changed.
+ *
+ * @return true iff the probe buffer's contents changed (P2P really moved data).
+ *         false on any allocation/lock/transfer error or if the sentinel
+ *         survived unchanged — callers should then fall back to CPU staging.
+ */
+[[nodiscard]] inline bool ajaCaptureRdmaDelivers(
+    CNTV2Card* card, CudaP2PContextHandle cudaCtx,
+    std::uint32_t frameByteSize) noexcept
+{
+  if(!card || !cudaCtx || frameByteSize == 0)
+    return false;
+
+  // A modest slice is enough to detect a dropped transfer; DMAReadFrame reads
+  // the first `probeBytes` of the framestore. 64 KiB matches the GPU page /
+  // RDMA granularity.
+  const std::uint32_t probeBytes
+      = frameByteSize < (64u * 1024) ? frameByteSize : (64u * 1024);
+
+  void* gpu = nullptr;
+  if(cuda_p2p_alloc_buffer(cudaCtx, frameByteSize, &gpu) != CUDA_P2P_SUCCESS
+     || !gpu)
+    return false;
+
+  bool delivered = false;
+  if(ajaDmaLock(card, gpu, frameByteSize, /*rdma=*/true))
+  {
+    constexpr unsigned char kSentinel = 0xEE;
+    std::vector<unsigned char> seed(probeBytes, kSentinel);
+    if(cuda_p2p_upload_buffer(cudaCtx, gpu, seed.data(), probeBytes)
+       == CUDA_P2P_SUCCESS)
+    {
+      // Real card→GPU transfer of framestore 0 into the pinned buffer.
+      if(card->DMAReadFrame(
+             0, reinterpret_cast<ULWord*>(gpu),
+             static_cast<ULWord>(probeBytes)))
+      {
+        std::vector<unsigned char> back(probeBytes, kSentinel);
+        if(cuda_p2p_download_buffer(cudaCtx, back.data(), gpu, probeBytes)
+           == CUDA_P2P_SUCCESS)
+        {
+          for(unsigned char b : back)
+          {
+            if(b != kSentinel)
+            {
+              delivered = true;
+              break;
+            }
+          }
+        }
+      }
+    }
+    ajaDmaUnlock(card, gpu, frameByteSize);
+  }
+  cuda_p2p_free_buffer(cudaCtx, gpu);
+
+  if(!delivered)
+    qWarning() << "AJA capture RDMA probe: card→GPU P2P transfer did not "
+                  "deliver data (pin/return-code succeeded but the write was "
+                  "dropped — GPU likely on a different PCIe host bridge). "
+                  "Falling back to CPU staging.";
+  return delivered;
 }
 
 } // namespace Gfx::AJA
