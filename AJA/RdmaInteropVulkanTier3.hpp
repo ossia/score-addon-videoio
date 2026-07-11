@@ -5,6 +5,7 @@
 #include <Gfx/Graph/interop/ComputeRingDispatcher.hpp>
 #include <Gfx/Graph/interop/GpuDirectStrategy.hpp>
 #include <Gfx/Graph/interop/GpuRingBuffer.hpp>
+#include <Gfx/Graph/interop/StageProfiler.hpp>
 #include <Gfx/Graph/interop/VulkanCudaBounce.hpp>
 
 #include <ntv2card.h>
@@ -166,14 +167,15 @@ struct RdmaInteropVulkanTier3 final : score::gfx::interop::GpuDirectStrategy
   {
     if(!m_ring.valid() || !m_rhi)
       return nullptr;
-    // 1. Make the encode frame's compute results visible (QRhi Vulkan
-    //    replays its deferred commands at frame end; finish() waits them).
-    m_rhi->finish();
-    // 2. Bridge ring -> bounce in a dedicated tiny frame. Recording the
+    SCORE_STAGE_PROFILE(vkPrep, "vkt3-prepare-total");
+    // 1. Bridge ring -> bounce in a dedicated tiny frame. Recording the
     //    copy inside the encode frame via beginExternal is NOT reliable on
     //    the deferred-recording Vulkan backend outside a pass — the raw
     //    command lands before the replayed compute pass. A separate frame
-    //    after finish() gives unambiguous ordering at ~µs cost.
+    //    gives unambiguous ordering: the copy's pre-barrier's first sync
+    //    scope covers everything earlier in SUBMISSION ORDER on the queue
+    //    (the already-submitted encode frame), so no host wait is needed
+    //    between encode and copy.
     const std::size_t idx = m_ring.writeIndex();
     QRhiCommandBuffer* cb2{};
     if(m_rhi->beginOffscreenFrame(&cb2) != QRhi::FrameOpSuccess || !cb2)
@@ -182,9 +184,15 @@ struct RdmaInteropVulkanTier3 final : score::gfx::interop::GpuDirectStrategy
         *cb2, m_ring.slot(idx).nativeVkBuffer, m_frameBytes,
         idx % m_bounce.slotCount());
     m_rhi->endOffscreenFrame();
-    m_rhi->finish();
+    // 2. Order Vulkan-copy -> CUDA-DtoD. Fast path: empty submit signals
+    //    the exported timeline semaphore (covers all prior queue work);
+    //    CUDA waits it on the bridge stream — the host never blocks on
+    //    Vulkan. Fallback: full finish().
+    if(!(m_bounce.signalCopyDoneOnQueue() && m_bounce.waitCopyDoneOnStream()))
+      m_rhi->finish();
     // 3. CUDA-side DtoD from the exportable buffer's CUDA view into the
-    //    vendor-pinned bounce (stream-synced; the card may DMA on return).
+    //    vendor-pinned bounce (stream-synced — the single host block per
+    //    frame; the card may DMA on return).
     m_bounce.flushToBounce(idx % m_bounce.slotCount(), m_frameBytes);
     void* p = m_bounce.cudaPtr(idx % m_bounce.slotCount());
     m_ring.advance();
