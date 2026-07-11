@@ -306,8 +306,16 @@ bool AjaOutputBackend::cardCanAccept()
   // Cap in-flight depth below the full AC ring: the pump stuffs the ring
   // whenever we accept, so accepting until ring-full trades ~4 extra
   // frames of end-to-end latency for nothing — 2 queued frames already
-  // sustain rate (transfer completes well inside a frame period).
-  if(m_acStarted && status.GetBufferLevel() >= 3)
+  // sustain rate (transfer completes well inside a frame period), and each
+  // extra queued frame costs a full frame period of end-to-end latency
+  // (16.7 ms at 60p, 40 ms at 25p). SCORE_AJA_OUT_DEPTH overrides for
+  // experiments; floor of 2 keeps one frame of jitter headroom.
+  static const int kMaxQueued = [] {
+    if(const char* v = std::getenv("SCORE_AJA_OUT_DEPTH"); v && *v)
+      return std::max(2, std::atoi(v));
+    return 2;
+  }();
+  if(m_acStarted && status.GetBufferLevel() >= kMaxQueued)
     return false;
   return true;
 }

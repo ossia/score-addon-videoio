@@ -936,16 +936,30 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
   Stat renderMs;
   renderMs.reserve(int(vf.rate * opt.seconds) + 64);
 
+  // Absolute-deadline pacing: a naive `start(int(1000/rate))` truncates the
+  // period (59.94 -> 16 ms = 62.5 Hz ceiling) and drifts under event-loop
+  // load (measured 53..63 effective fps at a 59.94/60 target). Poll at 2 ms
+  // against a steady_clock schedule instead: self-correcting, no bursts
+  // (resync when >2 periods behind), and the pump re-paces the wire on VBI
+  // regardless.
+  const double periodNs = 1e9 / vf.rate;
+  int64_t nextDeadline = nowNs() + int64_t(periodNs);
   QTimer render;
   render.setTimerType(Qt::PreciseTimer);
   QObject::connect(&render, &QTimer::timeout, [&] {
+    const int64_t now = nowNs();
+    if(now < nextDeadline)
+      return;
+    if(now - nextDeadline > 2 * int64_t(periodNs))
+      nextDeadline = now; // fell far behind (init hiccup): resync, don't burst
+    nextDeadline += int64_t(periodNs);
     const int64_t t0 = nowNs();
     out->render();
     renderMs.add((nowNs() - t0) / 1e6);
     if(gpuRx)
       gpuRcv.renderTick(); // capture readback + verify (main thread)
   });
-  render.start(int(1000.0 / vf.rate));
+  render.start(2);
 
   QEventLoop loop;
   QTimer stopper;
