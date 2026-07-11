@@ -194,7 +194,12 @@ struct VerifyMetrics
   Stat latency;
   Stat interval;
   std::string dumpPrefix;
-  static constexpr int64_t kWarmupNs = 800'000'000;
+  // Excluded from gap/repeat/PSNR accounting while the link settles. UHD
+  // HDMI needs far longer than HD: the 594 MHz TMDS link retrains for over
+  // a second after EnableVideoInput, during which the RX hands us black
+  // frames at full rate (the "flake" at 2160p was just this window leaking
+  // into the PSNR samples).
+  int64_t warmupNs = 800'000'000;
 
   void reserveSamples(int n)
   {
@@ -205,7 +210,7 @@ struct VerifyMetrics
   bool recordIndex(int idx, int64_t recvNs)
   {
     const int n = frames.fetch_add(1, std::memory_order_relaxed) + 1;
-    const bool warm = (recvNs - startNs) < kWarmupNs;
+    const bool warm = (recvNs - startNs) < warmupNs;
     if(idx < 0)
       return false;
     if(!warm && lastIdx >= 0)
@@ -271,6 +276,8 @@ struct GpuReceiver
     graph->addEdge(
         in->output[0], bg->input[0], Process::CableType::ImmediateGlutton);
     graph->createAllRenderLists(api);
+    if(int64_t(w) * h > 2048 * 1152)
+      m.warmupNs = 3'000'000'000;
     m.startNs = nowNs();
     return bg->canRender();
   }
