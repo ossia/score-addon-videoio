@@ -146,7 +146,7 @@ void MagewellInputBackend::start()
     {
       if(buf)
       {
-        MWUnpinVideoBuffer(m_channel, mwBufferAddress(buf));
+        MWUnpinVideoBuffer(m_channel, buf);
         buf = nullptr;
       }
     }
@@ -229,7 +229,7 @@ void MagewellInputBackend::stop()
     {
       if(buf)
       {
-        MWUnpinVideoBuffer(m_channel, mwBufferAddress(buf));
+        MWUnpinVideoBuffer(m_channel, buf);
         buf = nullptr;
       }
     }
