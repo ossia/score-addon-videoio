@@ -2,6 +2,7 @@
 #include <AJA/Tier3Common.hpp>
 #include <Gfx/Graph/interop/GpuDirectOutput.hpp>
 #include <Gfx/Graph/interop/GpuDirectStrategy.hpp>
+#include <Gfx/Graph/interop/RdmaRingDepth.hpp>
 
 #include <ntv2card.h>
 
@@ -49,7 +50,8 @@ struct RdmaInteropGLTier3 final : score::gfx::interop::GpuDirectStrategy
     // bounce would starve the capture side's pins. One slot is race-free
     // here because AutoCirculateTransfer is a blocking DMA — the card has
     // finished reading the bounce before submit returns.
-    oc.slotCount = c.frameByteSize >= (32u << 20) ? 1 : 2;
+    oc.slotCount = score::gfx::interop::rdmaRingDepthForFrame(
+        c.frameByteSize, {/*full=*/2, /*large=*/1});
     oc.debugName = "AJA-RDMA-GL-Storage";
     oc.encoderFactory = [fmt = m_targetFormat] {
       return makeTier3Encoder(fmt);

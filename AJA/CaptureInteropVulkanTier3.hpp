@@ -5,6 +5,7 @@
 #include <Gfx/Graph/interop/CaptureStrategyCommon.hpp>
 #include <Gfx/Graph/interop/CudaP2PBridge.h>
 #include <Gfx/Graph/interop/GpuDirectCaptureStrategy.hpp>
+#include <Gfx/Graph/interop/RdmaRingDepth.hpp>
 #include <Gfx/Graph/interop/VkExternalMemoryHelpers.hpp>
 
 #include <score/gfx/Vulkan.hpp>
@@ -128,7 +129,8 @@ struct CaptureInteropVulkanTier3 final : score::gfx::interop::GpuDirectCaptureSt
     if(cuda_p2p_init(&m_cudaCtx) != CUDA_P2P_SUCCESS || !m_cudaCtx)
       return false;
 
-    m_slotCount = cfg.frameByteSize >= (32u << 20) ? 2 : kMaxSlots;
+    m_slotCount = score::gfx::interop::rdmaRingDepthForFrame(
+        cfg.frameByteSize, {/*full=*/int(kMaxSlots), /*large=*/2});
 
     const QSize sz = cfg.outputTexture->pixelSize();
     m_texW = sz.width();
@@ -189,7 +191,9 @@ struct CaptureInteropVulkanTier3 final : score::gfx::interop::GpuDirectCaptureSt
 
     // The image starts UNDEFINED; transition to GENERAL once so QRhi (told
     // GENERAL via createFrom) and CUDA (which writes the memory) agree.
-    if(!transitionImageToGeneral(s.image.image))
+    if(!score::gfx::vkinterop::transitionImageLayout(
+           m_vk, m_gfxQueue, std::uint32_t(m_gfxFamily), s.image.image,
+           VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL))
       return false;
 
     // Row layout of the linear image, for the pitched CUDA writes.
@@ -308,64 +312,6 @@ private:
     qWarning() << "AJA RDMA-IN(Vulkan/T3):" << what << "failed";
     release();
     return false;
-  }
-
-  // One-time UNDEFINED -> GENERAL transition via a transient command buffer,
-  // so the QRhi-adopted image is genuinely in the layout createFrom claims.
-  bool transitionImageToGeneral(VkImage image)
-  {
-    VkCommandPool pool{VK_NULL_HANDLE};
-    VkCommandPoolCreateInfo pci{};
-    pci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    pci.queueFamilyIndex = std::uint32_t(m_gfxFamily);
-    if(m_devFuncs->vkCreateCommandPool(m_vk.dev, &pci, nullptr, &pool)
-       != VK_SUCCESS)
-      return false;
-
-    VkCommandBuffer cb{VK_NULL_HANDLE};
-    VkCommandBufferAllocateInfo ai{};
-    ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    ai.commandPool = pool;
-    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    ai.commandBufferCount = 1;
-    bool ok = m_devFuncs->vkAllocateCommandBuffers(m_vk.dev, &ai, &cb)
-              == VK_SUCCESS;
-    if(ok)
-    {
-      VkCommandBufferBeginInfo bi{};
-      bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-      bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-      m_devFuncs->vkBeginCommandBuffer(cb, &bi);
-
-      VkImageMemoryBarrier b{};
-      b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-      b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-      b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-      b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      b.image = image;
-      b.subresourceRange
-          = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      b.srcAccessMask = 0;
-      b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-      m_devFuncs->vkCmdPipelineBarrier(
-          cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
-          &b);
-      m_devFuncs->vkEndCommandBuffer(cb);
-
-      VkSubmitInfo si{};
-      si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-      si.commandBufferCount = 1;
-      si.pCommandBuffers = &cb;
-      ok = m_devFuncs->vkQueueSubmit(m_gfxQueue, 1, &si, VK_NULL_HANDLE)
-           == VK_SUCCESS;
-      if(ok)
-        m_devFuncs->vkQueueWaitIdle(m_gfxQueue);
-      m_devFuncs->vkFreeCommandBuffers(m_vk.dev, pool, 1, &cb);
-    }
-    m_devFuncs->vkDestroyCommandPool(m_vk.dev, pool, nullptr);
-    return ok;
   }
 };
 

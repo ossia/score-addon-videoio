@@ -209,7 +209,9 @@ struct DeltacastRdmaOutput final : score::gfx::interop::GpuDirectStrategy
 
       // The image starts UNDEFINED; transition to GENERAL once so QRhi (told
       // GENERAL via createFrom) and CUDA (which reads the memory) agree.
-      if(!transitionImageToGeneral())
+      if(!score::gfx::vkinterop::transitionImageLayout(
+             m_vk, m_gfxQueue, std::uint32_t(m_gfxFamily), m_exportImg.image,
+             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL))
         return releaseFail("image layout transition");
 
       auto handle = vki::exportMemoryHandle(
@@ -372,62 +374,6 @@ private:
     qWarning() << "Deltacast RDMA-OUT(Vulkan):" << what << "failed";
     release();
     return false;
-  }
-
-  // One-time UNDEFINED -> GENERAL transition via a transient command buffer, so
-  // the QRhi-adopted image is genuinely in the layout createFrom claims.
-  bool transitionImageToGeneral()
-  {
-    VkCommandPool pool{VK_NULL_HANDLE};
-    VkCommandPoolCreateInfo pci{};
-    pci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    pci.queueFamilyIndex = std::uint32_t(m_gfxFamily);
-    if(m_devFuncs->vkCreateCommandPool(m_vk.dev, &pci, nullptr, &pool)
-       != VK_SUCCESS)
-      return false;
-
-    VkCommandBuffer cb{VK_NULL_HANDLE};
-    VkCommandBufferAllocateInfo ai{};
-    ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    ai.commandPool = pool;
-    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    ai.commandBufferCount = 1;
-    bool ok = m_devFuncs->vkAllocateCommandBuffers(m_vk.dev, &ai, &cb)
-              == VK_SUCCESS;
-    if(ok)
-    {
-      VkCommandBufferBeginInfo bi{};
-      bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-      bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-      m_devFuncs->vkBeginCommandBuffer(cb, &bi);
-
-      VkImageMemoryBarrier b{};
-      b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-      b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-      b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-      b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      b.image = m_exportImg.image;
-      b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      b.srcAccessMask = 0;
-      b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-      m_devFuncs->vkCmdPipelineBarrier(
-          cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-          VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
-      m_devFuncs->vkEndCommandBuffer(cb);
-
-      VkSubmitInfo si{};
-      si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-      si.commandBufferCount = 1;
-      si.pCommandBuffers = &cb;
-      ok = m_devFuncs->vkQueueSubmit(m_gfxQueue, 1, &si, VK_NULL_HANDLE)
-           == VK_SUCCESS;
-      if(ok)
-        m_devFuncs->vkQueueWaitIdle(m_gfxQueue);
-      m_devFuncs->vkFreeCommandBuffers(m_vk.dev, pool, 1, &cb);
-    }
-    m_devFuncs->vkDestroyCommandPool(m_vk.dev, pool, nullptr);
-    return ok;
   }
 };
 

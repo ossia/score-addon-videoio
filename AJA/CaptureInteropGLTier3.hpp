@@ -5,6 +5,7 @@
 #include <Gfx/Graph/interop/GpuDirectCaptureStrategy.hpp>
 #include <Gfx/Graph/interop/CudaP2PBridge.h>
 #include <Gfx/Graph/interop/GpuRingBuffer.hpp>
+#include <Gfx/Graph/interop/RdmaRingDepth.hpp>
 #include <Gfx/Graph/interop/StageProfiler.hpp>
 
 #include <ntv2card.h>
@@ -102,7 +103,8 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
   bool init(const score::gfx::interop::GpuDirectCaptureStrategyConfig& c) override
   {
     cfg = c;
-    m_slotCount = cfg.frameByteSize >= (32u << 20) ? 2 : kMaxSlots;
+    m_slotCount = score::gfx::interop::rdmaRingDepthForFrame(
+        cfg.frameByteSize, {/*full=*/int(kMaxSlots), /*large=*/2});
     if(!cfg.rhi || !m_card || !cfg.outputTexture)
       return false;
     if(!cuda_p2p_available())

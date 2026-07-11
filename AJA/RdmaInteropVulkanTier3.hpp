@@ -5,6 +5,7 @@
 #include <Gfx/Graph/interop/ComputeRingDispatcher.hpp>
 #include <Gfx/Graph/interop/GpuDirectStrategy.hpp>
 #include <Gfx/Graph/interop/GpuRingBuffer.hpp>
+#include <Gfx/Graph/interop/RdmaRingDepth.hpp>
 #include <Gfx/Graph/interop/StageProfiler.hpp>
 #include <Gfx/Graph/interop/VulkanCudaBounce.hpp>
 
@@ -73,7 +74,8 @@ struct RdmaInteropVulkanTier3 final : score::gfx::interop::GpuDirectStrategy
     m_frameBytes = c.frameByteSize;
 
     // BAR1 budget: same policy as the GL path (see RdmaInteropGLTier3).
-    const int slots = c.frameByteSize >= (32u << 20) ? 1 : 2;
+    const int slots = score::gfx::interop::rdmaRingDepthForFrame(
+        c.frameByteSize, {/*full=*/2, /*large=*/1});
 
     score::gfx::interop::VulkanCudaBounceConfig bc{};
     bc.rhi = c.rhi;
