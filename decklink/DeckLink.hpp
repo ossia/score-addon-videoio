@@ -15,4 +15,16 @@
 #include "DeckLinkAPI_h.h"
 #else
 #include <DeckLinkAPI.h>
+
+#include <cstdint>
+#include <cstring>
+
+// The Linux SDK's LinuxCOM.h provides HRESULT/REFIID but not the Windows
+// helper types/functions the shared backend code uses.
+using LONGLONG = int64_t;
+
+inline bool IsEqualIID(REFIID a, REFIID b) noexcept
+{
+  return std::memcmp(&a, &b, sizeof(REFIID)) == 0;
+}
 #endif
