@@ -110,14 +110,32 @@ public:
   }
 
   HRESULT STDMETHODCALLTYPE VideoInputFormatChanged(
-      BMDVideoInputFormatChangedEvents, IDeckLinkDisplayMode*,
-      BMDDetectedVideoInputFormatFlags) override
+      BMDVideoInputFormatChangedEvents events, IDeckLinkDisplayMode* newMode,
+      BMDDetectedVideoInputFormatFlags detected) override
   {
-    // Signal (re)appeared or changed while we run a FIXED mode. Re-arming the
-    // input (sample pattern: pause -> re-enable -> flush -> start) makes the
-    // capture engine re-lock onto the live signal; without it the input can
-    // stay on placeholder frames for the rest of the session.
-    rearm("format-change");
+    // We run a FIXED mode, so this event is only actionable when the detected
+    // signal actually differs from what the input is already enabled with.
+    // Re-arming unconditionally self-feeds: every re-enable re-triggers
+    // detection, and during an upstream colorspace transition (YUV idle
+    // raster -> 4:4:4 RGB payload) the storm burns the whole re-arm budget
+    // before the wire settles, leaving the capture black for the session.
+    const bool wantRGB = m_inputSettings.pixelFormat == bmdFormat8BitBGRA
+                         || m_inputSettings.pixelFormat == bmdFormat8BitARGB
+                         || m_inputSettings.pixelFormat == bmdFormat10BitRGB
+                         || m_inputSettings.pixelFormat == bmdFormat10BitRGBX
+                         || m_inputSettings.pixelFormat == bmdFormat10BitRGBXLE
+                         || m_inputSettings.pixelFormat == bmdFormat12BitRGB
+                         || m_inputSettings.pixelFormat == bmdFormat12BitRGBLE;
+    const bool wireRGB = detected & bmdDetectedVideoInputRGB444;
+    const bool wireYUV = detected & bmdDetectedVideoInputYCbCr422;
+    const bool modeDiffers = (events & bmdVideoInputDisplayModeChanged)
+                             && newMode
+                             && newMode->GetDisplayMode()
+                                    != m_inputSettings.displayMode;
+    const bool colorDiffers
+        = (wantRGB && wireYUV && !wireRGB) || (!wantRGB && wireRGB && !wireYUV);
+    if(modeDiffers || colorDiffers)
+      rearm("format-change");
     return S_OK;
   }
 
