@@ -878,6 +878,19 @@ void AjaOutputBackend::shutdownAJADevice()
 
   // The VBI consumer is owned by AJANode; it is stopped in destroyOutput()
   // before this runs, so the card is idle here.
+  // Ground-truth wire cadence: the card's own frame counters (identical to
+  // ntv2capture.cpp:503's GetProcessedFrameCount). acFramesProcessed = frames
+  // the card actually clocked to the SDI wire since AutoCirculateStart,
+  // independent of any host-side render/readback rate. SCORE_AJA_ACSTATS=1.
+  if(std::getenv("SCORE_AJA_ACSTATS"))
+  {
+    AUTOCIRCULATE_STATUS st;
+    if(m_card->AutoCirculateGetStatus(m_channel, st))
+      qDebug().nospace()
+          << "AJA-ACSTATS out: processed=" << st.GetProcessedFrameCount()
+          << " dropped=" << st.GetDroppedFrameCount()
+          << " level=" << st.GetBufferLevel();
+  }
   m_card->AutoCirculateStop(m_channel);
 
   // Drop HDR registers + ANC injection.

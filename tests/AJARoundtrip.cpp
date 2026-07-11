@@ -845,6 +845,11 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
   if(vf.eightK)
     inS.routingMode
         = eightKSquares ? AJAInputRoutingMode::SQD : AJAInputRoutingMode::TSI;
+  // "none" = TX-only: no receiver graph at all, so the render loop drives the
+  // sender alone. Isolates the product's true output cadence (measure the
+  // card's own acFramesProcessed via SCORE_AJA_ACSTATS) from the harness's
+  // single-thread render+readback+verify coupling.
+  const bool txOnly = (opt.rxMode == "none");
   const bool gpuRx = (opt.rxMode == "gpu");
   inS.useRDMA = gpuRx; // GPU-direct capture node vs CPU-staging capture
 
@@ -917,7 +922,11 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
   // Pre-size the receiver's perf sample buffers BEFORE its thread starts, so
   // recordIndex() never reallocates (and never races a reserve) on the hot path.
   const int estFrames = int(vf.rate * opt.seconds) + 64;
-  if(gpuRx)
+  if(txOnly)
+  {
+    // no receiver: the render loop feeds the output card alone
+  }
+  else if(gpuRx)
   {
     if(!gpuRcv.open(inS, vf.w, vf.h, opt.api))
       r.status = "SKIP(in-open)";
@@ -984,7 +993,9 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
   loop.exec();
 
   render.stop();
-  if(gpuRx)
+  if(txOnly)
+    ; // no receiver to stop
+  else if(gpuRx)
     gpuRcv.stop();
   else
     cpuRcv.stop();
@@ -1014,6 +1025,12 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
   r.txUnderruns = out->pacingUnderruns();
   r.sent = int(r.txGood);
 
+  if(r.status.empty() && txOnly)
+  {
+    // TX-only: the deliverable is the sender's own cadence (r.txGood +
+    // SCORE_AJA_ACSTATS output counters); no receiver, so no PSNR.
+    r.status = "TXONLY";
+  }
   if(r.status.empty())
   {
     if(opt.hdr != AJAHDRMode::Off)
@@ -1558,7 +1575,9 @@ Options parseOptions()
   QCommandLineOption dump(
       "dump", "Save first verified frame per cell to <prefix>_*.png", "prefix");
   QCommandLineOption rx(
-      "rx", "Receiver: cpu (AVFrame capture) | gpu (AJAInputNode readback)",
+      "rx",
+      "Receiver: cpu (AVFrame capture) | gpu (AJAInputNode readback) | none "
+      "(TX-only, measures pure sender cadence)",
       "mode", "cpu");
   QCommandLineOption texgenOpt(
       "texgen", "Test source: gpu (shader pattern) | cpu (legacy CPU paint)",
