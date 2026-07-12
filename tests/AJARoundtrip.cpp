@@ -4,7 +4,7 @@
 // TexgenNode -> AJANode) over SDI, captures it on a second card (real
 // CPU-staging capture path: makeAJACapture -> Video::ExternalInput), and
 // verifies pixel-accuracy + ordering + latency across the firmware-supported
-// mode matrix. See plan: sharded-launching-rabbit.md.
+// mode matrix.
 
 #include <AJA/AjaCaptureExternalInput.hpp>
 #include <AJA/AJAInput.hpp>
@@ -1422,7 +1422,7 @@ int runUploadBench(score::gfx::GraphicsApi api)
 // the remaining step is hardware-gated.
 // ---------------------------------------------------------------------------
 #if defined(AJA_HAS_VK_INTEROP_PROBE)
-// Design-B core validation: map an exportable VkImage as a CUDA array and run
+// Core validation: map an exportable VkImage as a CUDA array and run
 // the per-frame buffer->array copy the strategy uses, seeding the source buffer
 // with a gradient. Validates createExportableImage + cuda_interop_import_vulkan_image
 // + cuda_interop_upload_buffer + cuda_interop_copy_buffer_to_array on the real driver
@@ -1586,7 +1586,7 @@ int runVkInteropProbe()
               "  [ ok ] cuda_interop_import_vulkan_buffer -> CUdeviceptr %p\n",
               gpuPtr);
 
-          // --- Design B core: map a VkImage as a CUDA array and run the
+          // --- Map a VkImage as a CUDA array and run the
           //     per-frame buffer->array copy (the strategy's hot path). The
           //     packed UYVY texture is 960x1080 RGBA8 = the same byte count as
           //     the buffer (1920x1080x2), so we reuse the same buffer.

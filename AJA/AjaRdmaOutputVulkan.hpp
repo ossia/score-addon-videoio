@@ -19,7 +19,7 @@ namespace Gfx::AJA
 #if defined(SCORE_HAS_VULKAN_CUDA_BOUNCE)
 
 /**
- * @brief Vulkan tier-3 RDMA output for AJA.
+ * @brief Vulkan RDMA output for AJA.
  *
  * Same architecture as the GL path, with the CUDA↔graphics bridge
  * inverted: the QRhi compute encoder writes plain QRhi storage buffers

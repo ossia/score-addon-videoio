@@ -55,11 +55,9 @@ extern "C" {
 #define AJA_HAS_RDMA_CAPTURE_VULKAN 1
 #endif
 
-// Portable CPU-staging GL capture (no DVP / RDMA deps): the fallback used
-// when no GPU-direct strategy can initialize, so the decode pipeline still
-// runs on consumer GPUs.
-// Universal CPU-staging capture fallback: raw glTexSubImage2D on OpenGL,
-// portable QRhi uploadTexture on Vulkan/Metal/D3D. Works on every backend.
+// Portable CPU-staging capture fallback (no DVP / RDMA deps): raw
+// glTexSubImage2D on OpenGL, QRhi uploadTexture on Vulkan/Metal/D3D. Used
+// when no GPU-direct strategy can initialize; works on every backend.
 #include <AJA/AjaCpuCapture.hpp>
 
 namespace Gfx::AJA
@@ -269,7 +267,7 @@ private:
       // lets any backlog accumulated during strategy init persist forever as
       // constant end-to-end latency (one VBI in, one frame out — the level
       // never falls). Measured: 3-4 stuck frames on the DVP path (+~58 ms
-      // at 60p), 0-1 on tier-3 (the 88-vs-95 ms run variance). Every
+      // at 60p), 0-1 on RDMA (the 88-vs-95 ms run variance). Every
       // available frame must still be TRANSFERRED to advance AC, but only
       // the newest is ingested/published; stale ones land in the same slot
       // and are overwritten.
@@ -354,7 +352,7 @@ pickAjaCaptureStrategy(
   const bool allowRdma = force.isEmpty() || force == "rdma";
 
   // DVP first: "GPUDirect for Video" needs no nvidia-peermem, so it works
-  // on consumer GPUs where tier-3 RDMA (DMABufferLock inRDMA=true) can't.
+  // on consumer GPUs where RDMA (DMABufferLock inRDMA=true) can't.
 #if defined(AJA_HAS_CAPTURE_DVP_D3D11)
   if(allowDvp && backend == QRhi::D3D11)
     return std::make_unique<score::gfx::interop::DvpCaptureD3D11<AjaDmaLockPolicy>>(
@@ -372,7 +370,7 @@ pickAjaCaptureStrategy(
         "DVP-GL");
 #endif
 #if defined(AJA_HAS_RDMA_CAPTURE_GL)
-  // Linux GL: real tier-3 RDMA via CUDA-imported GL storage buffer +
+  // Linux GL: real RDMA via CUDA-imported GL storage buffer +
   // DMABufferLock(inRDMA=true). init() returns false if the platform
   // doesn't have GPUDirect RDMA available, in which case the caller
   // falls back to AVFrame staging.
