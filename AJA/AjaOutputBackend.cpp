@@ -289,6 +289,15 @@ score::gfx::interop::PacedFramePump::Hooks AjaOutputBackend::pacingHooks()
   return h;
 }
 
+std::function<bool()> AjaOutputBackend::genlockTickSource()
+{
+  // Phase 2 (opt-in): expose the output-channel VBI as an ExternalGenlockClock
+  // pull facet so the render can be phase-locked to the card's genlock. This is
+  // a second waiter on the same VBI the submit pump uses (see waitForVBI); the
+  // Linux AJA VBI is a broadcast wait-queue, so both waiters wake per interrupt.
+  return [this] { return waitForVBI(); };
+}
+
 bool AjaOutputBackend::waitForVBI()
 {
   // Block until the next SDI VBI on this output channel (100 ms timeout so the

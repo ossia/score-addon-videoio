@@ -63,6 +63,7 @@ public:
   std::vector<std::function<std::unique_ptr<score::gfx::interop::VideoOutputStrategy>()>>
   gpuDirectCandidates(QRhi* rhi, score::gfx::GraphicsApi api) override;
   score::gfx::interop::PacedFramePump::Hooks pacingHooks() override;
+  std::function<bool()> genlockTickSource() override;
 
   /// Open the card + set the video standard, link/routing, VPID and HDR ANC.
   /// Returns false on failure. Geometry/format valid only after a true return.

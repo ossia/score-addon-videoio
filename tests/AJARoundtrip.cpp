@@ -15,6 +15,7 @@
 
 #include <Gfx/Graph/BackgroundNode.hpp>
 #include <Gfx/Graph/Graph.hpp>
+#include <Gfx/Graph/RenderClock.hpp>
 #include <Gfx/Graph/RenderState.hpp>
 #include <Gfx/Graph/TexgenNode.hpp>
 #include <Gfx/Graph/interop/VideoOutputStrategy.hpp>
@@ -496,6 +497,7 @@ struct Options
   bool benchUpload = false; // card-free upload microbenchmark, then exit
   bool vkInteropProbe = false; // Vulkan<->CUDA external-memory probe, then exit
   int outDepth = 0; // AJAOutputSettings::outputRingDepth (0 = auto/default 2)
+  std::string clock = "timer"; // render clock: timer (default) | genlock (VBI)
 };
 
 AJAHDRMode parseHdr(const std::string& s)
@@ -977,10 +979,38 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
   Stat renderMs;
   renderMs.reserve(int(vf.rate * opt.seconds) + 64);
 
-  // Absolute-deadline pacing: a naive `start(int(1000/rate))` truncates the
-  // period (59.94 -> 16 ms = 62.5 Hz ceiling) and drifts under event-loop
-  // load (measured 53..63 effective fps at a 59.94/60 target). Poll at 2 ms
-  // against a steady_clock schedule instead: self-correcting, no bursts
+  // One render tick: encode the scene into the output framestore path and (in
+  // gpu-rx mode) do the capture readback+verify. Shared by both clock paths so
+  // they are byte-identical per tick; only the *pacing source* differs.
+  auto renderTick = [&] {
+    const int64_t t0 = nowNs();
+    out->render();
+    renderMs.add((nowNs() - t0) / 1e6);
+    if(gpuRx)
+      gpuRcv.renderTick(); // capture readback + verify (main thread)
+  };
+
+  // --clock genlock (opt-in, default OFF): drive render off the output card's
+  // VBI — the same genlock the submit pump waits on — so render and submit are
+  // phase-locked (goal: kill the out-ring drops + tighten jitter). Default
+  // --clock timer keeps the free-running wall-timer below, byte-for-byte.
+  const bool wantGenlock = (opt.clock == "genlock");
+  std::function<bool()> genlockTick
+      = wantGenlock ? out->genlockTickSource() : std::function<bool()>{};
+  if(wantGenlock && !genlockTick)
+    std::printf("  [clock] genlock requested but backend exposes no VBI tick "
+                "source; falling back to timer\n");
+  std::printf(
+      "  [clock] %s\n", genlockTick ? "genlock (card VBI)" : "timer (wall)");
+
+  // ExternalGenlockClock marshals render() onto this (main / QRhi) thread.
+  QObject clockOwner;
+  std::unique_ptr<score::gfx::ExternalGenlockClock> genlock;
+
+  // Absolute-deadline pacing (timer path): a naive `start(int(1000/rate))`
+  // truncates the period (59.94 -> 16 ms = 62.5 Hz ceiling) and drifts under
+  // event-loop load (measured 53..63 effective fps at a 59.94/60 target). Poll
+  // at 2 ms against a steady_clock schedule instead: self-correcting, no bursts
   // (resync when >2 periods behind), and the pump re-paces the wire on VBI
   // regardless.
   const double periodNs = 1e9 / vf.rate;
@@ -994,25 +1024,35 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
     if(now - nextDeadline > 2 * int64_t(periodNs))
       nextDeadline = now; // fell far behind (init hiccup): resync, don't burst
     nextDeadline += int64_t(periodNs);
-    const int64_t t0 = nowNs();
-    out->render();
-    renderMs.add((nowNs() - t0) / 1e6);
-    if(gpuRx)
-      gpuRcv.renderTick(); // capture readback + verify (main thread)
+    renderTick();
   });
-  render.start(2);
+
+  if(genlockTick)
+  {
+    genlock = std::make_unique<score::gfx::ExternalGenlockClock>(
+        &clockOwner, std::move(genlockTick));
+    genlock->start(renderTick);
+  }
+  else
+  {
+    render.start(2);
+  }
 
   QEventLoop loop;
   QTimer stopper;
   stopper.setSingleShot(true);
   QObject::connect(&stopper, &QTimer::timeout, &loop, [&] {
     render.stop();
+    if(genlock)
+      genlock->stop(); // stop() runs on this (owner) thread: safe, see class doc
     loop.quit();
   });
   stopper.start(qint64(opt.seconds * 1000));
   loop.exec();
 
   render.stop();
+  if(genlock)
+    genlock->stop();
   if(txOnly)
     ; // no receiver to stop
   else if(gpuRx)
@@ -1626,10 +1666,16 @@ Options parseOptions()
       "explicit). Higher = more latency, more drop-safety. A/B latency without "
       "the SCORE_AJA_OUT_DEPTH env var.",
       "n", "0");
+  QCommandLineOption clockOpt(
+      "clock",
+      "Render clock (opt-in): timer (default, free-running wall-timer) | "
+      "genlock (drive render off the output card VBI, phase-locked to submit). "
+      "Env SCORE_AJA_GENLOCK_CLOCK=1 also selects genlock.",
+      "mode", "timer");
   p.addOptions(
       {outDev, inDev, outCh, inCh, secs, fmts, pfs, iop, dump, rx, texgenOpt,
        apiOpt, eightKModeOpt, allFmt, hdrOpt, list, benchUp, vkProbe,
-       outDepthOpt});
+       outDepthOpt, clockOpt});
   p.process(*qApp);
 
   o.outDevice = p.value(outDev).toInt();
@@ -1663,6 +1709,12 @@ Options parseOptions()
   o.benchUpload = p.isSet(benchUp);
   o.vkInteropProbe = p.isSet(vkProbe);
   o.outDepth = p.value(outDepthOpt).toInt();
+  o.clock = p.value(clockOpt).toStdString();
+  // Env fallback (only when --clock not passed explicitly): SCORE_AJA_GENLOCK_CLOCK=1.
+  if(!p.isSet(clockOpt))
+    if(const char* e = std::getenv("SCORE_AJA_GENLOCK_CLOCK"); e && e[0] == '1'
+       && e[1] == '\0')
+      o.clock = "genlock";
   return o;
 }
 
