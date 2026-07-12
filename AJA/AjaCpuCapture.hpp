@@ -47,7 +47,7 @@ struct AjaCpuCapturePolicy
 };
 
 /// Universal CPU-staging AJA capture. Works on every backend.
-using CaptureInteropCpu
+using AjaCpuCapture
     = score::gfx::interop::CpuStagedCapture<AjaCpuCapturePolicy>;
 
 } // namespace Gfx::AJA

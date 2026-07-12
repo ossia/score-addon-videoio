@@ -1,7 +1,7 @@
 #include "AJAInput.hpp"
 
 #include "AJACaptureSession.hpp"
-#include "AJACpuCapture.hpp"
+#include "AjaCaptureExternalInput.hpp"
 #include "AJAInputNode.hpp"
 
 #include <Gfx/GfxApplicationPlugin.hpp>

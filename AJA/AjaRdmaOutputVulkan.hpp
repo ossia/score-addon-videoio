@@ -1,6 +1,6 @@
 #pragma once
 #include <AJA/AjaDmaLock.hpp>
-#include <AJA/Tier3Common.hpp>
+#include <AJA/AjaWireEncoder.hpp>
 #include <Gfx/Graph/encoders/ColorSpaceOut.hpp>
 #include <Gfx/Graph/interop/ComputeRingDispatcher.hpp>
 #include <Gfx/Graph/interop/VideoOutputStrategy.hpp>
@@ -33,9 +33,9 @@ namespace Gfx::AJA
  * Ordering: QRhi::finish() in prepareNextFrame() (mirrors the GL fence /
  * glFinish); timeline semaphores are a later optimisation.
  */
-struct RdmaInteropVulkanTier3 final : score::gfx::interop::VideoOutputStrategy
+struct AjaRdmaOutputVulkan final : score::gfx::interop::VideoOutputStrategy
 {
-  RdmaInteropVulkanTier3(CNTV2Card* card, NTV2FrameBufferFormat fmt) noexcept
+  AjaRdmaOutputVulkan(CNTV2Card* card, NTV2FrameBufferFormat fmt) noexcept
       : m_card{card}, m_targetFormat{fmt} {}
 
   CNTV2Card* m_card{};
@@ -55,7 +55,7 @@ struct RdmaInteropVulkanTier3 final : score::gfx::interop::VideoOutputStrategy
   {
     return rhi && rhi->backend() == QRhi::Vulkan
            && rhi->isFeatureSupported(QRhi::Compute)
-           && tier3SupportsFormat(fmt, width);
+           && ajaWireEncoderSupports(fmt, width);
   }
 
   bool init(const score::gfx::interop::VideoOutputStrategyConfig& c) override
@@ -66,14 +66,14 @@ struct RdmaInteropVulkanTier3 final : score::gfx::interop::VideoOutputStrategy
                << "backend" << (c.rhi ? int(c.rhi->backend()) : -1)
                << "compute"
                << (c.rhi && c.rhi->isFeatureSupported(QRhi::Compute))
-               << "fmt" << tier3SupportsFormat(m_targetFormat, c.width)
+               << "fmt" << ajaWireEncoderSupports(m_targetFormat, c.width)
                << "state" << (c.state != nullptr);
       return false;
     }
     m_rhi = c.rhi;
     m_frameBytes = c.frameByteSize;
 
-    // BAR1 budget: same policy as the GL path (see RdmaInteropGLTier3).
+    // BAR1 budget: same policy as the GL path (see AjaRdmaOutputGL).
     const int slots = score::gfx::interop::rdmaRingDepthForFrame(
         c.frameByteSize, {/*full=*/2, /*large=*/1});
 
@@ -133,7 +133,7 @@ struct RdmaInteropVulkanTier3 final : score::gfx::interop::VideoOutputStrategy
     dc.sourceTexture = c.sourceTexture;
     dc.width = c.width;
     dc.height = c.height;
-    dc.encoderFactory = [fmt = m_targetFormat] { return makeTier3Encoder(fmt); };
+    dc.encoderFactory = [fmt = m_targetFormat] { return ajaMakeWireEncoder(fmt); };
     dc.colorConversion = score::gfx::colorMatrixOut(
         AVCOL_SPC_BT709, AVCOL_TRC_BT709, AVCOL_RANGE_MPEG, AVCOL_PRI_BT709);
     dc.fence = nullptr; // ordering via QRhi::finish() in prepareNextFrame
@@ -204,9 +204,9 @@ struct RdmaInteropVulkanTier3 final : score::gfx::interop::VideoOutputStrategy
 
 #else // !SCORE_HAS_VULKAN_CUDA_BOUNCE
 
-struct RdmaInteropVulkanTier3 final : score::gfx::interop::VideoOutputStrategy
+struct AjaRdmaOutputVulkan final : score::gfx::interop::VideoOutputStrategy
 {
-  RdmaInteropVulkanTier3(CNTV2Card*, NTV2FrameBufferFormat) noexcept { }
+  AjaRdmaOutputVulkan(CNTV2Card*, NTV2FrameBufferFormat) noexcept { }
   const char* name() const noexcept override { return "RDMA-Vulkan/T3-stub"; }
   static bool isSupported(QRhi*, NTV2FrameBufferFormat, int) { return false; }
   bool init(const score::gfx::interop::VideoOutputStrategyConfig&) override

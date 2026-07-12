@@ -8,7 +8,7 @@
  * allocation, BAR1-mappable / gpuDirectRDMACapable), then a CUDA copy moves it
  * into the decoder's output texture — no host transit.
  *
- * This is the symmetric inverse of AJA/CaptureInteropVulkanTier3 for the
+ * This is the symmetric inverse of AJA/AjaRdmaCaptureVulkan for the
  * Deltacast "application buffers" RDMA path. The ONLY structural differences
  * from that template are:
  *   (a) the per-slot RDMA buffer comes from score::gfx::interop::RdmaGpuBuffer

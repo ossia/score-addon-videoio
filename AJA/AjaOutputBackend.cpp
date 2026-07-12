@@ -1,7 +1,7 @@
 #include "AjaOutputBackend.hpp"
 
 #include <AJA/AjaFormatMap.hpp>
-#include <AJA/Tier3Common.hpp>
+#include <AJA/AjaWireEncoder.hpp>
 #include <Gfx/Graph/encoders/ColorSpaceOut.hpp>
 #include <Gfx/Graph/interop/StageProfiler.hpp>
 
@@ -11,15 +11,15 @@ extern "C" {
 
 // GPU-direct strategy candidates (moved from AJANode::createOutput).
 #if defined(SCORE_HAS_AJA_CUDA_BRIDGE) && defined(_WIN32)
-#include <AJA/RdmaInteropD3D11Tier3.hpp>
-#include <AJA/RdmaInteropD3D12Tier3.hpp>
+#include <AJA/AjaRdmaOutputD3D11.hpp>
+#include <AJA/AjaRdmaOutputD3D12.hpp>
 #endif
 #if defined(SCORE_HAS_AJA_CUDA_BRIDGE) && (QT_HAS_VULKAN || (QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)))
-#include <AJA/RdmaInteropVulkanTier3.hpp>
+#include <AJA/AjaRdmaOutputVulkan.hpp>
 #define AJA_HAS_RDMA_VULKAN 1
 #endif
 #if defined(SCORE_HAS_AJA_CUDA_BRIDGE) && QT_CONFIG(opengl)
-#include <AJA/RdmaInteropGLTier3.hpp>
+#include <AJA/AjaRdmaOutputGL.hpp>
 #define AJA_HAS_RDMA_GL 1
 #endif
 #if defined(SCORE_HAS_AJA_DVP_BRIDGE)
@@ -256,21 +256,21 @@ AjaOutputBackend::gpuDirectCandidates(QRhi* rhi, score::gfx::GraphicsApi api)
   }
   // Tier-3 RDMA (Linux; on Windows these init() to false).
   if(allowRdma && rhi && rhi->isFeatureSupported(QRhi::Compute)
-     && tier3SupportsFormat(m_bufferFormat, m_settings.width))
+     && ajaWireEncoderSupports(m_bufferFormat, m_settings.width))
   {
 #if defined(SCORE_HAS_AJA_CUDA_BRIDGE) && defined(_WIN32)
     if(api == score::gfx::GraphicsApi::D3D11)
-      candidates.push_back([card, fbf] { return std::make_unique<RdmaInteropD3D11Tier3>(card, fbf); });
+      candidates.push_back([card, fbf] { return std::make_unique<AjaRdmaOutputD3D11>(card, fbf); });
     else if(api == score::gfx::GraphicsApi::D3D12)
-      candidates.push_back([card, fbf] { return std::make_unique<RdmaInteropD3D12Tier3>(card, fbf); });
+      candidates.push_back([card, fbf] { return std::make_unique<AjaRdmaOutputD3D12>(card, fbf); });
 #endif
 #if defined(AJA_HAS_RDMA_VULKAN)
     if(api == score::gfx::GraphicsApi::Vulkan)
-      candidates.push_back([card, fbf] { return std::make_unique<RdmaInteropVulkanTier3>(card, fbf); });
+      candidates.push_back([card, fbf] { return std::make_unique<AjaRdmaOutputVulkan>(card, fbf); });
 #endif
 #if defined(AJA_HAS_RDMA_GL)
     if(api == score::gfx::GraphicsApi::OpenGL)
-      candidates.push_back([card, fbf] { return std::make_unique<RdmaInteropGLTier3>(card, fbf); });
+      candidates.push_back([card, fbf] { return std::make_unique<AjaRdmaOutputGL>(card, fbf); });
 #endif
   }
   return candidates;

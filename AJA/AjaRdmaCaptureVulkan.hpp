@@ -29,7 +29,7 @@ namespace Gfx::AJA
 /**
  * @brief Vulkan tier-3 zero-copy capture (Design B: CUDA buffer->image copy).
  *
- * The symmetric inverse of CaptureInteropGLTier3 for the Vulkan backend. Unlike
+ * The symmetric inverse of AjaRdmaCaptureGL for the Vulkan backend. Unlike
  * GL — where the AJA-DMA'd buffer is uploaded into the decoder's texture with a
  * raw glTexSubImage2D on the render thread — Vulkan has no raw upload call to
  * hand inside acquireForRender(), so the per-frame copy is done on the CAPTURE
@@ -56,9 +56,9 @@ namespace Gfx::AJA
  * The Vulkan<->CUDA machinery (export + image-map + copy) is validated by
  * AJARoundtrip --vk-interop-probe on consumer GPUs.
  */
-struct CaptureInteropVulkanTier3 final : score::gfx::interop::VideoCaptureStrategy
+struct AjaRdmaCaptureVulkan final : score::gfx::interop::VideoCaptureStrategy
 {
-  CaptureInteropVulkanTier3(CNTV2Card* card, AJAInputPixelFormat pixfmt) noexcept
+  AjaRdmaCaptureVulkan(CNTV2Card* card, AJAInputPixelFormat pixfmt) noexcept
       : m_card{card}, m_pixelFormat{pixfmt} {}
 
   score::gfx::interop::VideoCaptureStrategyConfig cfg{};

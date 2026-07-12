@@ -6,7 +6,7 @@
 // verifies pixel-accuracy + ordering + latency across the firmware-supported
 // mode matrix. See plan: sharded-launching-rabbit.md.
 
-#include <AJA/AJACpuCapture.hpp>
+#include <AJA/AjaCaptureExternalInput.hpp>
 #include <AJA/AJAInput.hpp>
 #include <AJA/AjaFormatMap.hpp>
 #include <AJA/AJAInputNode.hpp>
@@ -30,7 +30,7 @@
 #endif
 
 // Vulkan<->CUDA external-memory probe support (the zero-copy capture
-// foundation). Gated like the CaptureInteropVulkanTier3 strategy.
+// foundation). Gated like the AjaRdmaCaptureVulkan strategy.
 #if QT_CONFIG(vulkan) && defined(SCORE_HAS_AJA_CUDA_BRIDGE)
 #define AJA_HAS_VK_INTEROP_PROBE 1
 #include <Gfx/Graph/interop/CudaP2PBridge.h>
@@ -1375,7 +1375,7 @@ int runUploadBench(score::gfx::GraphicsApi api)
 
 // ---------------------------------------------------------------------------
 // Vulkan zero-copy capture foundation probe. Validates the export-allocate ->
-// FD -> CUDA-import chain that CaptureInteropVulkanTier3 needs, on this exact
+// FD -> CUDA-import chain that AjaRdmaCaptureVulkan needs, on this exact
 // driver/Qt, WITHOUT any AJA card or nvidia-peermem (only the final AJA
 // DMABufferLock(inRDMA=true) pin needs peermem; everything up to it is pure
 // Vulkan<->CUDA interop). If this passes, the strategy's machinery is sound;

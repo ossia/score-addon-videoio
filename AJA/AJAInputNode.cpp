@@ -43,16 +43,16 @@ extern "C" {
 #endif
 
 #if defined(SCORE_HAS_AJA_CUDA_BRIDGE) && defined(_WIN32)
-#include <AJA/CaptureInteropD3D11Tier3.hpp>
-#define AJA_HAS_CAPTURE_TIER3_D3D11 1
+#include <AJA/AjaRdmaCaptureD3D11.hpp>
+#define AJA_HAS_RDMA_CAPTURE_D3D11 1
 #endif
 #if defined(SCORE_HAS_AJA_CUDA_BRIDGE) && QT_CONFIG(opengl)
-#include <AJA/CaptureInteropGLTier3.hpp>
-#define AJA_HAS_CAPTURE_TIER3_GL 1
+#include <AJA/AjaRdmaCaptureGL.hpp>
+#define AJA_HAS_RDMA_CAPTURE_GL 1
 #endif
 #if defined(SCORE_HAS_AJA_CUDA_BRIDGE) && (QT_HAS_VULKAN || (QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)))
-#include <AJA/CaptureInteropVulkanTier3.hpp>
-#define AJA_HAS_CAPTURE_TIER3_VULKAN 1
+#include <AJA/AjaRdmaCaptureVulkan.hpp>
+#define AJA_HAS_RDMA_CAPTURE_VULKAN 1
 #endif
 
 // Portable CPU-staging GL capture (no DVP / RDMA deps): the fallback used
@@ -60,7 +60,7 @@ extern "C" {
 // runs on consumer GPUs.
 // Universal CPU-staging capture fallback: raw glTexSubImage2D on OpenGL,
 // portable QRhi uploadTexture on Vulkan/Metal/D3D. Works on every backend.
-#include <AJA/CaptureInteropCpu.hpp>
+#include <AJA/AjaCpuCapture.hpp>
 
 namespace Gfx::AJA
 {
@@ -371,19 +371,19 @@ pickAjaCaptureStrategy(
                                               : NV_DVP_FORMAT_RGBA8,
         "DVP-GL");
 #endif
-#if defined(AJA_HAS_CAPTURE_TIER3_GL)
+#if defined(AJA_HAS_RDMA_CAPTURE_GL)
   // Linux GL: real tier-3 RDMA via CUDA-imported GL storage buffer +
   // DMABufferLock(inRDMA=true). init() returns false if the platform
   // doesn't have GPUDirect RDMA available, in which case the caller
   // falls back to AVFrame staging.
   if(allowRdma && backend == QRhi::OpenGLES2)
-    return std::make_unique<CaptureInteropGLTier3>(card, pixfmt);
+    return std::make_unique<AjaRdmaCaptureGL>(card, pixfmt);
 #endif
-#if defined(AJA_HAS_CAPTURE_TIER3_VULKAN)
+#if defined(AJA_HAS_RDMA_CAPTURE_VULKAN)
   // Linux Vulkan: stub (returns false) — pending strategy-owned
   // exportable outputTexture contract.
   if(allowRdma && backend == QRhi::Vulkan)
-    return std::make_unique<CaptureInteropVulkanTier3>(card, pixfmt);
+    return std::make_unique<AjaRdmaCaptureVulkan>(card, pixfmt);
 #endif
   (void)backend; (void)card; (void)pixfmt;
   return nullptr;
@@ -442,7 +442,7 @@ public:
   std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
   makeCpuStrategy() override
   {
-    return std::make_unique<CaptureInteropCpu>(m_capture.card(), m_pixfmt);
+    return std::make_unique<AjaCpuCapture>(m_capture.card(), m_pixfmt);
   }
 
   void

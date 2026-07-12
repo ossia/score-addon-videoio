@@ -56,7 +56,7 @@ if(EXISTS "${VIDEOIO_AJA_SDK_ROOT}/ajantv2/includes/ntv2card.h")
 
   list(APPEND VIDEOIO_HDRS
     "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AJACaptureSession.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AJACpuCapture.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AjaCaptureExternalInput.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AJAInput.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AJAInputNode.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AJAOutput.hpp"
@@ -66,15 +66,15 @@ if(EXISTS "${VIDEOIO_AJA_SDK_ROOT}/ajantv2/includes/ntv2card.h")
     "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AjaDmaLock.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AjaDmaLockPolicy.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AjaDvpEncoder.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/CaptureInteropCpu.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/CaptureInteropD3D11Tier3.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/CaptureInteropGLTier3.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/CaptureInteropVulkanTier3.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/RdmaInteropD3D11Tier3.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/RdmaInteropD3D12Tier3.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/RdmaInteropGLTier3.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/RdmaInteropVulkanTier3.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/Tier3Common.hpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AjaCpuCapture.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AjaRdmaCaptureD3D11.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AjaRdmaCaptureGL.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AjaRdmaCaptureVulkan.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AjaRdmaOutputD3D11.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AjaRdmaOutputD3D12.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AjaRdmaOutputGL.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AjaRdmaOutputVulkan.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AjaWireEncoder.hpp")
   list(APPEND VIDEOIO_SRCS
     "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AJACaptureSession.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/AJA/AJAInput.cpp"

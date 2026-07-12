@@ -25,7 +25,7 @@ namespace Gfx::AJA
  * @brief OpenGL tier-3 capture: AJA SDI → P2P DMA → CUDA bounce buffer →
  *        DtoD copy → GL StorageBuffer → glTexSubImage2D → QRhi GL texture.
  *
- * Symmetric inverse of `RdmaInteropGLTier3` (the OUTPUT path). The
+ * Symmetric inverse of `AjaRdmaOutputGL` (the OUTPUT path). The
  * `ImportedGpuBufferRing` primitive allocates N CUDA-imported GL StorageBuffers;
  * alongside each slot sits a CUDA-owned (cuMemAlloc) bounce buffer that
  * AJA P2P-DMAs the captured frame into (pinned via
@@ -56,9 +56,9 @@ namespace Gfx::AJA
  * Requires: AJA Linux kernel module with RDMA support, NVIDIA driver
  * with CUDA + GPUDirect P2P, libcuda.so.1 loadable at runtime.
  */
-struct CaptureInteropGLTier3 final : score::gfx::interop::VideoCaptureStrategy
+struct AjaRdmaCaptureGL final : score::gfx::interop::VideoCaptureStrategy
 {
-  CaptureInteropGLTier3(CNTV2Card* card, AJAInputPixelFormat pixfmt) noexcept
+  AjaRdmaCaptureGL(CNTV2Card* card, AJAInputPixelFormat pixfmt) noexcept
       : m_card{card}, m_pixelFormat{pixfmt} {}
 
   score::gfx::interop::VideoCaptureStrategyConfig cfg{};
@@ -81,7 +81,7 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::VideoCaptureStrategy
 
   // Single-producer single-consumer slot handoff. Capture thread stores
   // the latest filled slot; render thread does an acquire-exchange to
-  // pull and consume. Shared with CaptureInteropCpu via GLCaptureUpload.hpp.
+  // pull and consume. Shared with AjaCpuCapture via GLCaptureUpload.hpp.
   score::gfx::interop::CaptureSlotPublisher m_publisher;
 
   // Option (a): register the decoder's RGBA8 input texture with CUDA and

@@ -12,7 +12,7 @@ namespace Gfx::AJA
 /**
  * @brief D3D11 capture strategy for the future Linux RDMA path.
  *
- * Symmetric inverse of RdmaInteropD3D11Tier3 on the output side. The
+ * Symmetric inverse of AjaRdmaOutputD3D11 on the output side. The
  * design lands a CUDA-allocated GPU buffer (DMABufferLock(inRDMA=true))
  * that AJA P2P-DMAs the SDI frame straight into VRAM, with the QRhi
  * D3D11 texture imported via cudaGraphicsD3D11RegisterResource for
@@ -26,11 +26,11 @@ namespace Gfx::AJA
  * The blocker on Windows is the same as for the output side:
  * DMABufferLock(inRDMA=true) is a Linux-only feature in the AJA
  * driver. On Linux this strategy will mirror the (also-not-yet-built)
- * RdmaInteropD3D11Tier3 Linux path.
+ * AjaRdmaOutputD3D11 Linux path.
  */
-struct CaptureInteropD3D11Tier3 final : score::gfx::interop::VideoCaptureStrategy
+struct AjaRdmaCaptureD3D11 final : score::gfx::interop::VideoCaptureStrategy
 {
-  CaptureInteropD3D11Tier3(CNTV2Card* card, AJAInputPixelFormat pixfmt) noexcept
+  AjaRdmaCaptureD3D11(CNTV2Card* card, AJAInputPixelFormat pixfmt) noexcept
       : m_card{card}, m_pixelFormat{pixfmt} {}
 
   score::gfx::interop::VideoCaptureStrategyConfig cfg{};
