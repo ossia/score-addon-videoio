@@ -28,7 +28,7 @@ struct DeltacastOutputSettings
 /**
  * @brief DELTACAST SDI playout backend (score::gfx::DirectVideoOutputBackend).
  *
- * Host-staged v1 using the SDK-owned slot model: HostStagedOutput renders +
+ * Host-staged v1 using the SDK-owned slot model: CpuStagedVideoOutput renders +
  * reads back the wire-format frame into its pinned ring, then submitFrame()
  * copies it into a VHD slot (VHD_LockSlotHandle -> VHD_GetSlotBuffer ->
  * memcpy -> VHD_UnlockSlotHandle). VHD_UnlockSlotHandle blocks until the board
@@ -55,7 +55,7 @@ public:
   QString colorConversion() const override;
   std::vector<score::gfx::interop::HostStagedPlane> planes() const override;
   score::gfx::interop::VendorDmaRegistrar registrar() override;
-  std::vector<std::function<std::unique_ptr<score::gfx::interop::GpuDirectStrategy>()>>
+  std::vector<std::function<std::unique_ptr<score::gfx::interop::VideoOutputStrategy>()>>
   gpuDirectCandidates(QRhi* rhi, score::gfx::GraphicsApi api) override;
   score::gfx::interop::PacedFramePump::Hooks pacingHooks() override;
 

@@ -10,7 +10,7 @@
 
 namespace score::gfx::interop
 {
-struct GpuDirectCaptureSlotRing;
+struct VideoCaptureSlotRing;
 }
 
 namespace Gfx::Bluefish
@@ -32,7 +32,7 @@ class BluefishInputBackend final : public score::gfx::DMACaptureBackend
 public:
   BluefishInputBackend(
       BluefishInputSettings settings,
-      score::gfx::interop::GpuDirectCaptureSlotRing& ring);
+      score::gfx::interop::VideoCaptureSlotRing& ring);
   ~BluefishInputBackend() override;
 
   bool open() override;
@@ -42,11 +42,11 @@ public:
   Video::ImageFormat imageFormat() const override;
   std::unique_ptr<score::gfx::GPUVideoDecoder>
   makeDecoder(Video::VideoMetadata& meta) override;
-  std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+  std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
   pickStrategy(QRhi::Implementation) override;
-  std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+  std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
   makeCpuStrategy() override;
-  void setStrategy(score::gfx::interop::GpuDirectCaptureStrategy* s) noexcept override;
+  void setStrategy(score::gfx::interop::VideoCaptureStrategy* s) noexcept override;
   void start() override;
   void stop() override;
 
@@ -56,13 +56,13 @@ private:
   bool ingestBuffer(blue_auto_buffer_info& info, void* dst);
 
   BluefishInputSettings m_settings;
-  score::gfx::interop::GpuDirectCaptureSlotRing& m_ring;
+  score::gfx::interop::VideoCaptureSlotRing& m_ring;
 
   BLUEVELVETC_HANDLE m_bvc{nullptr};
   /// Lazily-created conversion engine for UHD 2SI -> square-division rasters
   /// (blue_auto_buffer_info::RequiredConversionType).
   BFC_CONVERSION_HANDLE m_conv{nullptr};
-  score::gfx::interop::GpuDirectCaptureStrategy* m_strategy{};
+  score::gfx::interop::VideoCaptureStrategy* m_strategy{};
 
   BLUE_U32 m_videoModeExt{VID_FMT_EXT_INVALID};
   std::thread m_thread;

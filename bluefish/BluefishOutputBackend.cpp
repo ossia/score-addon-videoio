@@ -147,7 +147,7 @@ BluefishOutputBackend::planes() const
 
 score::gfx::interop::VendorDmaRegistrar BluefishOutputBackend::registrar()
 {
-  // Host-staged v1: the app owns the bfAlloc golden buffers; HostStagedOutput's
+  // Host-staged v1: the app owns the bfAlloc golden buffers; CpuStagedVideoOutput's
   // ring is plain host memory that submitFrame() memcpies into the current
   // bfAlloc buffer before DMA. No page-lock of the ring is required (bfAlloc
   // already returns DMA-suitable pages for the staging buffers themselves).
@@ -158,7 +158,7 @@ score::gfx::interop::VendorDmaRegistrar BluefishOutputBackend::registrar()
 }
 
 std::vector<
-    std::function<std::unique_ptr<score::gfx::interop::GpuDirectStrategy>()>>
+    std::function<std::unique_ptr<score::gfx::interop::VideoOutputStrategy>()>>
 BluefishOutputBackend::gpuDirectCandidates(QRhi*, score::gfx::GraphicsApi)
 {
   // BlueGpuDirect (GPU-direct playout) is out of scope for this host-staged

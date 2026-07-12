@@ -20,7 +20,7 @@ namespace Gfx::Bluefish
  *
  * Host-staged v1 using the FrameStore engine + application host buffers, exactly
  * as the SDK Playback sample: 4 page-aligned bfAlloc golden buffers are cycled.
- * HostStagedOutput renders + reads back the wire-format frame into its ring, then
+ * CpuStagedVideoOutput renders + reads back the wire-format frame into its ring, then
  * pacingHooks pace + submit:
  *   - waitForTick(): bfcWaitVideoOutputSync(UPD_FMT_FRAME) blocks to the output
  *     interrupt (genlock pacing).
@@ -51,7 +51,7 @@ public:
   QString colorConversion() const override;
   std::vector<score::gfx::interop::HostStagedPlane> planes() const override;
   score::gfx::interop::VendorDmaRegistrar registrar() override;
-  std::vector<std::function<std::unique_ptr<score::gfx::interop::GpuDirectStrategy>()>>
+  std::vector<std::function<std::unique_ptr<score::gfx::interop::VideoOutputStrategy>()>>
   gpuDirectCandidates(QRhi* rhi, score::gfx::GraphicsApi api) override;
   score::gfx::interop::PacedFramePump::Hooks pacingHooks() override;
 

@@ -1,7 +1,7 @@
 #pragma once
 #include <AJA/Tier3Common.hpp>
-#include <Gfx/Graph/interop/GpuDirectOutput.hpp>
-#include <Gfx/Graph/interop/GpuDirectStrategy.hpp>
+#include <Gfx/Graph/interop/RdmaVideoOutput.hpp>
+#include <Gfx/Graph/interop/VideoOutputStrategy.hpp>
 #include <Gfx/Graph/interop/RdmaRingDepth.hpp>
 
 #include <ntv2card.h>
@@ -13,16 +13,16 @@ namespace Gfx::AJA
 
 /**
  * @brief OpenGL tier-3 RDMA output for AJA. Thin shim over
- *        `score::gfx::interop::GpuDirectOutput`.
+ *        `score::gfx::interop::RdmaVideoOutput`.
  */
-struct RdmaInteropGLTier3 final : score::gfx::interop::GpuDirectStrategy
+struct RdmaInteropGLTier3 final : score::gfx::interop::VideoOutputStrategy
 {
   RdmaInteropGLTier3(CNTV2Card* card, NTV2FrameBufferFormat fmt) noexcept
       : m_card{card}, m_targetFormat{fmt} {}
 
   CNTV2Card* m_card{};
   NTV2FrameBufferFormat m_targetFormat{};
-  score::gfx::interop::GpuDirectOutput m_output;
+  score::gfx::interop::RdmaVideoOutput m_output;
 
   const char* name() const noexcept override { return "RDMA-GL/T3"; }
 
@@ -32,12 +32,12 @@ struct RdmaInteropGLTier3 final : score::gfx::interop::GpuDirectStrategy
            && tier3SupportsFormat(fmt, width);
   }
 
-  bool init(const score::gfx::interop::GpuDirectStrategyConfig& c) override
+  bool init(const score::gfx::interop::VideoOutputStrategyConfig& c) override
   {
     if(!isSupported(c.rhi, m_targetFormat, c.width) || !c.state)
       return false;
 
-    score::gfx::interop::GpuDirectOutputConfig oc{};
+    score::gfx::interop::RdmaVideoOutputConfig oc{};
     oc.rhi = c.rhi;
     oc.state = c.state;
     oc.sourceTexture = c.sourceTexture;
@@ -82,7 +82,7 @@ struct RdmaInteropGLTier3 final : score::gfx::interop::GpuDirectStrategy
 
     if(!m_output.init(oc))
     {
-      qWarning() << "AJA RDMA(GL/T3): GpuDirectOutput init failed";
+      qWarning() << "AJA RDMA(GL/T3): RdmaVideoOutput init failed";
       return false;
     }
     return true;

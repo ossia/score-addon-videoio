@@ -43,7 +43,7 @@
 #include <Gfx/Graph/interop/CaptureStrategyCommon.hpp>
 #include <Gfx/Graph/interop/CudaFunctions.hpp>
 #include <Gfx/Graph/interop/CudaP2PBridge.h>
-#include <Gfx/Graph/interop/GpuDirectCaptureStrategy.hpp>
+#include <Gfx/Graph/interop/VideoCaptureStrategy.hpp>
 #include <Gfx/Graph/interop/RdmaGpuBuffer.hpp>
 #include <Gfx/Graph/interop/VkExternalMemoryHelpers.hpp>
 #include <Gfx/Graph/interop/VulkanRhiContext.hpp>
@@ -69,9 +69,9 @@ namespace Gfx::Deltacast
  * allocator) + CudaP2PBridge (the Vulkan-image import and the per-frame
  * buffer->array copy). No new GPU primitive is introduced.
  */
-struct DeltacastRdmaCapture final : score::gfx::interop::GpuDirectCaptureStrategy
+struct DeltacastRdmaCapture final : score::gfx::interop::VideoCaptureStrategy
 {
-  score::gfx::interop::GpuDirectCaptureStrategyConfig cfg{};
+  score::gfx::interop::VideoCaptureStrategyConfig cfg{};
 
   // Vulkan handles (borrowed from the QRhi backend).
   score::gfx::vkinterop::VulkanCtx m_vk{};
@@ -102,7 +102,7 @@ struct DeltacastRdmaCapture final : score::gfx::interop::GpuDirectCaptureStrateg
 
   const char* name() const noexcept override { return "Deltacast-RDMA-Vulkan"; }
 
-  bool init(const score::gfx::interop::GpuDirectCaptureStrategyConfig& c) override
+  bool init(const score::gfx::interop::VideoCaptureStrategyConfig& c) override
   {
     cfg = c;
     if(!cfg.rhi || !cfg.outputTexture || cfg.rhi->backend() != QRhi::Vulkan)

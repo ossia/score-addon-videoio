@@ -14,7 +14,7 @@ DeckLinkCaptureNode::~DeckLinkCaptureNode() = default;
 
 std::unique_ptr<score::gfx::DMACaptureBackend>
 DeckLinkCaptureNode::makeCaptureBackend(
-    score::gfx::interop::GpuDirectCaptureSlotRing& ring) const
+    score::gfx::interop::VideoCaptureSlotRing& ring) const
 {
   return std::make_unique<DeckLinkInputBackend>(settings, ring);
 }

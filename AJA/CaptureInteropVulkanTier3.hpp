@@ -4,7 +4,7 @@
 
 #include <Gfx/Graph/interop/CaptureStrategyCommon.hpp>
 #include <Gfx/Graph/interop/CudaP2PBridge.h>
-#include <Gfx/Graph/interop/GpuDirectCaptureStrategy.hpp>
+#include <Gfx/Graph/interop/VideoCaptureStrategy.hpp>
 #include <Gfx/Graph/interop/RdmaRingDepth.hpp>
 #include <Gfx/Graph/interop/VkExternalMemoryHelpers.hpp>
 #include <Gfx/Graph/interop/VulkanRhiContext.hpp>
@@ -56,12 +56,12 @@ namespace Gfx::AJA
  * The Vulkan<->CUDA machinery (export + image-map + copy) is validated by
  * AJARoundtrip --vk-interop-probe on consumer GPUs.
  */
-struct CaptureInteropVulkanTier3 final : score::gfx::interop::GpuDirectCaptureStrategy
+struct CaptureInteropVulkanTier3 final : score::gfx::interop::VideoCaptureStrategy
 {
   CaptureInteropVulkanTier3(CNTV2Card* card, AJAInputPixelFormat pixfmt) noexcept
       : m_card{card}, m_pixelFormat{pixfmt} {}
 
-  score::gfx::interop::GpuDirectCaptureStrategyConfig cfg{};
+  score::gfx::interop::VideoCaptureStrategyConfig cfg{};
   CNTV2Card* m_card{};
   AJAInputPixelFormat m_pixelFormat{};
 
@@ -104,7 +104,7 @@ struct CaptureInteropVulkanTier3 final : score::gfx::interop::GpuDirectCaptureSt
 
   const char* name() const noexcept override { return "RDMA-Vulkan/T3"; }
 
-  bool init(const score::gfx::interop::GpuDirectCaptureStrategyConfig& c) override
+  bool init(const score::gfx::interop::VideoCaptureStrategyConfig& c) override
   {
     cfg = c;
     if(!cfg.rhi || !m_card || !cfg.outputTexture

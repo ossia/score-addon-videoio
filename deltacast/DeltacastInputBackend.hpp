@@ -10,7 +10,7 @@
 
 namespace score::gfx::interop
 {
-struct GpuDirectCaptureSlotRing;
+struct VideoCaptureSlotRing;
 }
 
 namespace Gfx::Deltacast
@@ -39,7 +39,7 @@ class DeltacastInputBackend final : public score::gfx::DMACaptureBackend
 public:
   DeltacastInputBackend(
       DeltacastInputSettings settings,
-      score::gfx::interop::GpuDirectCaptureSlotRing& ring);
+      score::gfx::interop::VideoCaptureSlotRing& ring);
   ~DeltacastInputBackend() override;
 
   bool open() override;
@@ -49,11 +49,11 @@ public:
   Video::ImageFormat imageFormat() const override;
   std::unique_ptr<score::gfx::GPUVideoDecoder>
   makeDecoder(Video::VideoMetadata& meta) override;
-  std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+  std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
   pickStrategy(QRhi::Implementation) override;
-  std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+  std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
   makeCpuStrategy() override;
-  void setStrategy(score::gfx::interop::GpuDirectCaptureStrategy* s) noexcept override;
+  void setStrategy(score::gfx::interop::VideoCaptureStrategy* s) noexcept override;
   void start() override;
   void stop() override;
 
@@ -63,11 +63,11 @@ private:
   bool rdmaActive() const noexcept; ///< True once an RDMA strategy is bound.
 
   DeltacastInputSettings m_settings;
-  score::gfx::interop::GpuDirectCaptureSlotRing& m_ring;
+  score::gfx::interop::VideoCaptureSlotRing& m_ring;
 
   HANDLE m_board{nullptr};
   HANDLE m_stream{nullptr};
-  score::gfx::interop::GpuDirectCaptureStrategy* m_strategy{};
+  score::gfx::interop::VideoCaptureStrategy* m_strategy{};
 
   // RDMA path: the strategy created by pickStrategy (also the bound strategy
   // unless its init() failed and the node swapped in a CPU fallback). Used to

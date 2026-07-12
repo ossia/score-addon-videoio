@@ -1,7 +1,7 @@
 #pragma once
 #include <AJA/Tier3Common.hpp>
-#include <Gfx/Graph/interop/GpuDirectOutput.hpp>
-#include <Gfx/Graph/interop/GpuDirectStrategy.hpp>
+#include <Gfx/Graph/interop/RdmaVideoOutput.hpp>
+#include <Gfx/Graph/interop/VideoOutputStrategy.hpp>
 
 #include <ntv2card.h>
 
@@ -13,18 +13,18 @@ namespace Gfx::AJA
 /**
  * @brief D3D11 tier-3 RDMA output for AJA.
  *
- * Thin shim over `score::gfx::interop::GpuDirectOutput`. AJA-specific
+ * Thin shim over `score::gfx::interop::RdmaVideoOutput`. AJA-specific
  * bits (card handle, NTV2 format enum) are held by this class; the
  * vendor-neutral helper drives buffer ring + CUDA + encoder + fence.
  */
-struct RdmaInteropD3D11Tier3 final : score::gfx::interop::GpuDirectStrategy
+struct RdmaInteropD3D11Tier3 final : score::gfx::interop::VideoOutputStrategy
 {
   RdmaInteropD3D11Tier3(CNTV2Card* card, NTV2FrameBufferFormat fmt) noexcept
       : m_card{card}, m_targetFormat{fmt} {}
 
   CNTV2Card* m_card{};
   NTV2FrameBufferFormat m_targetFormat{};
-  score::gfx::interop::GpuDirectOutput m_output;
+  score::gfx::interop::RdmaVideoOutput m_output;
 
   const char* name() const noexcept override { return "RDMA-D3D11/T3"; }
 
@@ -34,12 +34,12 @@ struct RdmaInteropD3D11Tier3 final : score::gfx::interop::GpuDirectStrategy
            && tier3SupportsFormat(fmt, width);
   }
 
-  bool init(const score::gfx::interop::GpuDirectStrategyConfig& c) override
+  bool init(const score::gfx::interop::VideoOutputStrategyConfig& c) override
   {
     if(!isSupported(c.rhi, m_targetFormat, c.width) || !c.state)
       return false;
 
-    score::gfx::interop::GpuDirectOutputConfig oc{};
+    score::gfx::interop::RdmaVideoOutputConfig oc{};
     oc.rhi = c.rhi;
     oc.state = c.state;
     oc.sourceTexture = c.sourceTexture;
@@ -66,7 +66,7 @@ struct RdmaInteropD3D11Tier3 final : score::gfx::interop::GpuDirectStrategy
 
     if(!m_output.init(oc))
     {
-      qWarning() << "AJA RDMA(D3D11/T3): GpuDirectOutput init failed";
+      qWarning() << "AJA RDMA(D3D11/T3): RdmaVideoOutput init failed";
       return false;
     }
     return true;

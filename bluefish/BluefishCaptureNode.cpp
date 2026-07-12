@@ -16,7 +16,7 @@ BluefishCaptureNode::~BluefishCaptureNode() = default;
 
 std::unique_ptr<score::gfx::DMACaptureBackend>
 BluefishCaptureNode::makeCaptureBackend(
-    score::gfx::interop::GpuDirectCaptureSlotRing& ring) const
+    score::gfx::interop::VideoCaptureSlotRing& ring) const
 {
   return std::make_unique<BluefishInputBackend>(settings, ring);
 }

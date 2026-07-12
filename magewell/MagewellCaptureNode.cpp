@@ -14,7 +14,7 @@ MagewellCaptureNode::~MagewellCaptureNode() = default;
 
 std::unique_ptr<score::gfx::DMACaptureBackend>
 MagewellCaptureNode::makeCaptureBackend(
-    score::gfx::interop::GpuDirectCaptureSlotRing& ring) const
+    score::gfx::interop::VideoCaptureSlotRing& ring) const
 {
   return std::make_unique<MagewellInputBackend>(settings, ring);
 }

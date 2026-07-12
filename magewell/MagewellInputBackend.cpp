@@ -5,7 +5,7 @@
 #include <magewell/MagewellFormats.hpp>
 
 #include <Gfx/Graph/decoders/WireDecoderFactory.hpp>
-#include <Gfx/Graph/interop/GpuDirectCaptureStrategy.hpp>
+#include <Gfx/Graph/interop/VideoCaptureStrategy.hpp>
 #include <Gfx/Graph/interop/VideoPixelFormatAV.hpp>
 
 #include <Video/VideoInterface.hpp>
@@ -20,7 +20,7 @@ namespace Gfx::Magewell
 
 MagewellInputBackend::MagewellInputBackend(
     MagewellInputSettings settings,
-    score::gfx::interop::GpuDirectCaptureSlotRing& ring)
+    score::gfx::interop::VideoCaptureSlotRing& ring)
     : m_settings{settings}, m_ring{ring}
 {
 }
@@ -106,21 +106,21 @@ MagewellInputBackend::makeDecoder(Video::VideoMetadata& meta)
   return score::gfx::makeWireDecoder(neutralFromFourcc(m_settings.fourcc), meta);
 }
 
-std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
 MagewellInputBackend::pickStrategy(QRhi::Implementation)
 {
   // Magewell has no GPU-direct capture path; always host-staged.
   return {};
 }
 
-std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
 MagewellInputBackend::makeCpuStrategy()
 {
   return std::make_unique<MagewellCpuCapture>();
 }
 
 void MagewellInputBackend::setStrategy(
-    score::gfx::interop::GpuDirectCaptureStrategy* s) noexcept
+    score::gfx::interop::VideoCaptureStrategy* s) noexcept
 {
   m_strategy = s;
 }

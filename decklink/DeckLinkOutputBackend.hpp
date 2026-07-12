@@ -29,7 +29,7 @@ struct DeckLinkOutputSettings
  * its ScheduledFrameCompleted. The backend owns a small pool of SDK-allocated
  * IDeckLinkMutableVideoFrames; submitFrame() copies the staged bytes out of
  * the (reusable) host ring into a free pool frame and schedules that, so the
- * driver never retains a pointer into HostStagedOutput's ring. Pacing bridges
+ * driver never retains a pointer into CpuStagedVideoOutput's ring. Pacing bridges
  * DeckLink's push-model completion callback to the pump's pull-model via a
  * counting semaphore: one permit per FREE POOL FRAME (seeded with the pool,
  * consumed by waitForTick — which the pump only calls when a frame is
@@ -58,15 +58,15 @@ public:
   QString colorConversion() const override;
   std::vector<score::gfx::interop::HostStagedPlane> planes() const override;
   score::gfx::interop::VendorDmaRegistrar registrar() override;
-  std::vector<std::function<std::unique_ptr<score::gfx::interop::GpuDirectStrategy>()>>
+  std::vector<std::function<std::unique_ptr<score::gfx::interop::VideoOutputStrategy>()>>
   gpuDirectCandidates(QRhi*, score::gfx::GraphicsApi) override
   {
     // No single-buffer GPU-direct strategy: DeckLink's async scheduled playback
     // needs a frame ring, which the host-staged path provides. Output DVP is
-    // engaged via prefersGpuDownload() -> HostStagedOutput's HostPinnedRing.
+    // engaged via prefersGpuDownload() -> CpuStagedVideoOutput's HostPinnedRing.
     return {};
   }
-  /// Opt into the GPU-direct (DVP) download in HostStagedOutput: the encoder
+  /// Opt into the GPU-direct (DVP) download in CpuStagedVideoOutput: the encoder
   /// texture is DMA'd straight into the pinned ring slots, skipping the QRhi
   /// readback; submitFrame() then copies the slot into a pool frame. Falls
   /// back to CPU readback when no DVP backend is present.

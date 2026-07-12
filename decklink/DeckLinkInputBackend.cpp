@@ -5,7 +5,7 @@
 #include <decklink/DeckLinkFormats.hpp>
 
 #include <Gfx/Graph/decoders/WireDecoderFactory.hpp>
-#include <Gfx/Graph/interop/GpuDirectCaptureStrategy.hpp>
+#include <Gfx/Graph/interop/VideoCaptureStrategy.hpp>
 #include <Gfx/Graph/interop/VideoPixelFormatAV.hpp>
 
 // NVIDIA-DVP GPU-direct capture via the shared shim, gated on the bridge being
@@ -70,8 +70,8 @@ class InputCallback final : public IDeckLinkInputCallback
 public:
   InputCallback(
       IDeckLinkInput* input, DeckLinkInputSettings settings,
-      score::gfx::interop::GpuDirectCaptureStrategy** strategy,
-      score::gfx::interop::GpuDirectCaptureSlotRing& ring,
+      score::gfx::interop::VideoCaptureStrategy** strategy,
+      score::gfx::interop::VideoCaptureSlotRing& ring,
       std::uint32_t frameByteSize, int rowBytes, int height)
       : m_input{input}
       , m_inputSettings{settings}
@@ -261,8 +261,8 @@ public:
 private:
   IDeckLinkInput* m_input{};
   DeckLinkInputSettings m_inputSettings;
-  score::gfx::interop::GpuDirectCaptureStrategy** m_strategy{};
-  score::gfx::interop::GpuDirectCaptureSlotRing& m_ring;
+  score::gfx::interop::VideoCaptureStrategy** m_strategy{};
+  score::gfx::interop::VideoCaptureSlotRing& m_ring;
   std::uint32_t m_frameByteSize{};
   int m_rowBytes{};
   int m_height{};
@@ -276,7 +276,7 @@ private:
 
 DeckLinkInputBackend::DeckLinkInputBackend(
     DeckLinkInputSettings settings,
-    score::gfx::interop::GpuDirectCaptureSlotRing& ring)
+    score::gfx::interop::VideoCaptureSlotRing& ring)
     : m_settings{settings}, m_ring{ring}
 {
 }
@@ -397,13 +397,13 @@ DeckLinkInputBackend::makeDecoder(Video::VideoMetadata& meta)
       toNeutralFormat(m_settings.pixelFormat), meta);
 }
 
-std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
 DeckLinkInputBackend::makeCpuStrategy()
 {
   return std::make_unique<DeckLinkCpuCapture>();
 }
 
-std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
 DeckLinkInputBackend::pickStrategy(QRhi::Implementation impl)
 {
   // NVIDIA-DVP GPU-direct via the shared shim. The InputCallback CPU-memcpies

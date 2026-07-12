@@ -210,10 +210,10 @@ score::gfx::DirectVideoOutputBackend::CustomStage AjaOutputBackend::customStage(
   };
 }
 
-std::vector<std::function<std::unique_ptr<score::gfx::interop::GpuDirectStrategy>()>>
+std::vector<std::function<std::unique_ptr<score::gfx::interop::VideoOutputStrategy>()>>
 AjaOutputBackend::gpuDirectCandidates(QRhi* rhi, score::gfx::GraphicsApi api)
 {
-  using Strat = score::gfx::interop::GpuDirectStrategy;
+  using Strat = score::gfx::interop::VideoOutputStrategy;
   std::vector<std::function<std::unique_ptr<Strat>()>> candidates;
 
   // SCORE_AJA_FORCE_INTEROP = cpu | dvp | rdma (empty/unset = auto).

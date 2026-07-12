@@ -2,9 +2,9 @@
 #include <AJA/AjaDmaLock.hpp>
 
 #include <Gfx/Graph/interop/GLCaptureUpload.hpp>
-#include <Gfx/Graph/interop/GpuDirectCaptureStrategy.hpp>
+#include <Gfx/Graph/interop/VideoCaptureStrategy.hpp>
 #include <Gfx/Graph/interop/CudaP2PBridge.h>
-#include <Gfx/Graph/interop/GpuRingBuffer.hpp>
+#include <Gfx/Graph/interop/ImportedGpuBufferRing.hpp>
 #include <Gfx/Graph/interop/RdmaRingDepth.hpp>
 #include <Gfx/Graph/interop/StageProfiler.hpp>
 
@@ -26,7 +26,7 @@ namespace Gfx::AJA
  *        DtoD copy → GL StorageBuffer → glTexSubImage2D → QRhi GL texture.
  *
  * Symmetric inverse of `RdmaInteropGLTier3` (the OUTPUT path). The
- * `GpuRingBuffer` primitive allocates N CUDA-imported GL StorageBuffers;
+ * `ImportedGpuBufferRing` primitive allocates N CUDA-imported GL StorageBuffers;
  * alongside each slot sits a CUDA-owned (cuMemAlloc) bounce buffer that
  * AJA P2P-DMAs the captured frame into (pinned via
  * `DMABufferLock(inRDMA=true)`). The bounce hop exists because
@@ -56,18 +56,18 @@ namespace Gfx::AJA
  * Requires: AJA Linux kernel module with RDMA support, NVIDIA driver
  * with CUDA + GPUDirect P2P, libcuda.so.1 loadable at runtime.
  */
-struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrategy
+struct CaptureInteropGLTier3 final : score::gfx::interop::VideoCaptureStrategy
 {
   CaptureInteropGLTier3(CNTV2Card* card, AJAInputPixelFormat pixfmt) noexcept
       : m_card{card}, m_pixelFormat{pixfmt} {}
 
-  score::gfx::interop::GpuDirectCaptureStrategyConfig cfg{};
+  score::gfx::interop::VideoCaptureStrategyConfig cfg{};
   CNTV2Card* m_card{};
   AJAInputPixelFormat m_pixelFormat{};
 
   QOpenGLContext* m_glCtx{};
   CudaP2PContextHandle m_cudaCtx{};
-  score::gfx::interop::GpuRingBuffer m_ring;
+  score::gfx::interop::ImportedGpuBufferRing m_ring;
 
   static constexpr std::size_t kMaxSlots = 3;
   /// Runtime slot count: 3 normally; 2 at ≥32 MB frames so the pinned
@@ -100,7 +100,7 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
 
   const char* name() const noexcept override { return "RDMA-GL/T3"; }
 
-  bool init(const score::gfx::interop::GpuDirectCaptureStrategyConfig& c) override
+  bool init(const score::gfx::interop::VideoCaptureStrategyConfig& c) override
   {
     cfg = c;
     m_slotCount = score::gfx::interop::rdmaRingDepthForFrame(
@@ -206,13 +206,13 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
 
     if(!m_imageInterop)
     {
-      score::gfx::interop::GpuRingBufferConfig rcfg{
+      score::gfx::interop::ImportedGpuBufferRingConfig rcfg{
           cfg.rhi, m_cudaCtx, cfg.frameByteSize,
           static_cast<int>(m_slotCount), "AJA-RDMA-GL-Capture",
           /*glRegisterOnly=*/true};
       if(!m_ring.create(rcfg))
       {
-        qWarning() << "AJA RDMA-IN(GL/T3): GpuRingBuffer::create failed";
+        qWarning() << "AJA RDMA-IN(GL/T3): ImportedGpuBufferRing::create failed";
         release();
         return false;
       }
@@ -320,7 +320,7 @@ struct CaptureInteropGLTier3 final : score::gfx::interop::GpuDirectCaptureStrate
     // that accessing a registered resource through GL *while mapped* is
     // undefined. Fixing it properly means per-access map/unmap in the bridge
     // (mapped pointers are only valid per map cycle, so every cached slot
-    // gpuVA in GpuRingBuffer/consumers must be refreshed each frame) — a
+    // gpuVA in ImportedGpuBufferRing/consumers must be refreshed each frame) — a
     // redesign to do together with the first Linux GL bring-up, not blindly.
     // In practice NVIDIA keeps the mapping coherent here, but do not ship the
     // Linux GL tier-3 path without revisiting this.

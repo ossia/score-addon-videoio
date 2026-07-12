@@ -1,6 +1,6 @@
 #pragma once
 #include <AJA/Tier3Common.hpp>
-#include <Gfx/Graph/interop/GpuDirectStrategy.hpp>
+#include <Gfx/Graph/interop/VideoOutputStrategy.hpp>
 
 #include <ntv2card.h>
 
@@ -22,7 +22,7 @@ namespace Gfx::AJA
  * kept as scaffolding for future SDKs (BlackMagic etc) that might
  * activate the D3D12 path.
  */
-struct RdmaInteropD3D12Tier3 final : score::gfx::interop::GpuDirectStrategy
+struct RdmaInteropD3D12Tier3 final : score::gfx::interop::VideoOutputStrategy
 {
   RdmaInteropD3D12Tier3(CNTV2Card* card, NTV2FrameBufferFormat fmt) noexcept
       : m_card{card}, m_targetFormat{fmt} {}
@@ -32,7 +32,7 @@ struct RdmaInteropD3D12Tier3 final : score::gfx::interop::GpuDirectStrategy
 
   const char* name() const noexcept override { return "RDMA-D3D12/T3"; }
 
-  bool init(const score::gfx::interop::GpuDirectStrategyConfig& c) override
+  bool init(const score::gfx::interop::VideoOutputStrategyConfig& c) override
   {
     if(!c.rhi || !c.state)
       return false;

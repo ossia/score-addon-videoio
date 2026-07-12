@@ -1,6 +1,6 @@
 #pragma once
 #include <AJA/AJAInput.hpp>
-#include <Gfx/Graph/interop/GpuDirectCaptureStrategy.hpp>
+#include <Gfx/Graph/interop/VideoCaptureStrategy.hpp>
 
 #include <QDebug>
 
@@ -28,18 +28,18 @@ namespace Gfx::AJA
  * driver. On Linux this strategy will mirror the (also-not-yet-built)
  * RdmaInteropD3D11Tier3 Linux path.
  */
-struct CaptureInteropD3D11Tier3 final : score::gfx::interop::GpuDirectCaptureStrategy
+struct CaptureInteropD3D11Tier3 final : score::gfx::interop::VideoCaptureStrategy
 {
   CaptureInteropD3D11Tier3(CNTV2Card* card, AJAInputPixelFormat pixfmt) noexcept
       : m_card{card}, m_pixelFormat{pixfmt} {}
 
-  score::gfx::interop::GpuDirectCaptureStrategyConfig cfg{};
+  score::gfx::interop::VideoCaptureStrategyConfig cfg{};
   CNTV2Card* m_card{};
   AJAInputPixelFormat m_pixelFormat{};
 
   const char* name() const noexcept override { return "RDMA-D3D11/T3"; }
 
-  bool init(const score::gfx::interop::GpuDirectCaptureStrategyConfig& c) override
+  bool init(const score::gfx::interop::VideoCaptureStrategyConfig& c) override
   {
     cfg = c;
     qDebug() << "AJA RDMA-IN(D3D11/T3): not implemented yet; falling back";

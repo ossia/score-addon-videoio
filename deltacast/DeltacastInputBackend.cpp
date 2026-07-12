@@ -6,7 +6,7 @@
 
 #include <Gfx/Graph/decoders/WireDecoderFactory.hpp>
 #include <Gfx/Graph/interop/CudaP2PBridge.h>
-#include <Gfx/Graph/interop/GpuDirectCaptureStrategy.hpp>
+#include <Gfx/Graph/interop/VideoCaptureStrategy.hpp>
 #include <Gfx/Graph/interop/VideoPixelFormatAV.hpp>
 
 #include <Video/VideoInterface.hpp>
@@ -23,7 +23,7 @@ namespace Gfx::Deltacast
 
 DeltacastInputBackend::DeltacastInputBackend(
     DeltacastInputSettings settings,
-    score::gfx::interop::GpuDirectCaptureSlotRing& ring)
+    score::gfx::interop::VideoCaptureSlotRing& ring)
     : m_settings{settings}, m_ring{ring}
 {
 }
@@ -121,7 +121,7 @@ DeltacastInputBackend::makeDecoder(Video::VideoMetadata& meta)
       meta);
 }
 
-std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
 DeltacastInputBackend::pickStrategy(QRhi::Implementation impl)
 {
   // RDMA GPU-direct (Seam B) is the Vulkan-only / CUDA-only fast path. On any
@@ -134,20 +134,20 @@ DeltacastInputBackend::pickStrategy(QRhi::Implementation impl)
   return strat;
 }
 
-std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
 DeltacastInputBackend::makeCpuStrategy()
 {
   return std::make_unique<DeltacastCpuCapture>();
 }
 
 void DeltacastInputBackend::setStrategy(
-    score::gfx::interop::GpuDirectCaptureStrategy* s) noexcept
+    score::gfx::interop::VideoCaptureStrategy* s) noexcept
 {
   m_strategy = s;
   // If the node bound a strategy other than the RDMA one we created (i.e. its
   // init() failed and the node swapped in the CPU-staging fallback), drop the
   // RDMA pointer so start() takes the host-staged path.
-  if(s != static_cast<score::gfx::interop::GpuDirectCaptureStrategy*>(
+  if(s != static_cast<score::gfx::interop::VideoCaptureStrategy*>(
              m_rdmaStrategy))
     m_rdmaStrategy = nullptr;
 }
@@ -156,7 +156,7 @@ bool DeltacastInputBackend::rdmaActive() const noexcept
 {
   return m_rdmaStrategy != nullptr
          && m_strategy
-                == static_cast<score::gfx::interop::GpuDirectCaptureStrategy*>(
+                == static_cast<score::gfx::interop::VideoCaptureStrategy*>(
                        m_rdmaStrategy);
 }
 

@@ -201,7 +201,7 @@ DeltacastOutputBackend::planes() const
 
 score::gfx::interop::VendorDmaRegistrar DeltacastOutputBackend::registrar()
 {
-  // Host-staged v1: the SDK owns its slot buffers; HostStagedOutput's ring is
+  // Host-staged v1: the SDK owns its slot buffers; CpuStagedVideoOutput's ring is
   // plain host memory that submitFrame() copies into a VHD slot. No page-lock.
   score::gfx::interop::VendorDmaRegistrar reg;
   reg.registerSlot = [](void*, std::uint32_t) { return true; };
@@ -210,7 +210,7 @@ score::gfx::interop::VendorDmaRegistrar DeltacastOutputBackend::registrar()
 }
 
 std::vector<
-    std::function<std::unique_ptr<score::gfx::interop::GpuDirectStrategy>()>>
+    std::function<std::unique_ptr<score::gfx::interop::VideoOutputStrategy>()>>
 DeltacastOutputBackend::gpuDirectCandidates(QRhi* rhi, score::gfx::GraphicsApi)
 {
   // RDMA GPU-direct playout (Seam B) is the Vulkan-only / CUDA-only fast path.
@@ -223,7 +223,7 @@ DeltacastOutputBackend::gpuDirectCandidates(QRhi* rhi, score::gfx::GraphicsApi)
   const auto neutral = neutralFromPacking(
       static_cast<VHD_BUFFERPACKING>(m_settings.bufferPacking));
   std::vector<
-      std::function<std::unique_ptr<score::gfx::interop::GpuDirectStrategy>()>>
+      std::function<std::unique_ptr<score::gfx::interop::VideoOutputStrategy>()>>
       out;
   out.emplace_back([this, neutral] {
     return std::make_unique<DeltacastRdmaOutput>(this, neutral);

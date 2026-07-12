@@ -49,7 +49,7 @@
 #include <Gfx/Graph/encoders/WireEncoderFactory.hpp>
 #include <Gfx/Graph/interop/CudaFunctions.hpp>
 #include <Gfx/Graph/interop/CudaP2PBridge.h>
-#include <Gfx/Graph/interop/GpuDirectStrategy.hpp>
+#include <Gfx/Graph/interop/VideoOutputStrategy.hpp>
 #include <Gfx/Graph/interop/InteropFence.hpp>
 #include <Gfx/Graph/interop/RdmaGpuBuffer.hpp>
 #include <Gfx/Graph/interop/VideoPixelFormat.hpp>
@@ -79,7 +79,7 @@ namespace Gfx::Deltacast
  * allocator), CudaP2PBridge (the Vulkan-image import + the per-frame
  * array->buffer copy) and makeWireEncoder. No new GPU primitive is introduced.
  */
-struct DeltacastRdmaOutput final : score::gfx::interop::GpuDirectStrategy
+struct DeltacastRdmaOutput final : score::gfx::interop::VideoOutputStrategy
 {
   DeltacastRdmaOutput(
       DeltacastOutputBackend* backend,
@@ -94,7 +94,7 @@ struct DeltacastRdmaOutput final : score::gfx::interop::GpuDirectStrategy
   DeltacastOutputBackend* m_backend{};
   score::gfx::interop::VideoPixelFormat m_neutral{};
 
-  score::gfx::interop::GpuDirectStrategyConfig cfg{};
+  score::gfx::interop::VideoOutputStrategyConfig cfg{};
 
   // Vulkan handles (borrowed from the QRhi backend).
   score::gfx::vkinterop::VulkanCtx m_vk{};
@@ -140,7 +140,7 @@ struct DeltacastRdmaOutput final : score::gfx::interop::GpuDirectStrategy
 
   const char* name() const noexcept override { return "Deltacast-RDMA-Vulkan-OUT"; }
 
-  bool init(const score::gfx::interop::GpuDirectStrategyConfig& c) override
+  bool init(const score::gfx::interop::VideoOutputStrategyConfig& c) override
   {
     cfg = c;
     if(!m_backend || !cfg.rhi || !cfg.state || !cfg.sourceTexture

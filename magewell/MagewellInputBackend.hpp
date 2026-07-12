@@ -10,7 +10,7 @@
 
 namespace score::gfx::interop
 {
-struct GpuDirectCaptureSlotRing;
+struct VideoCaptureSlotRing;
 }
 
 namespace Gfx::Magewell
@@ -45,7 +45,7 @@ class MagewellInputBackend final : public score::gfx::DMACaptureBackend
 public:
   MagewellInputBackend(
       MagewellInputSettings settings,
-      score::gfx::interop::GpuDirectCaptureSlotRing& ring);
+      score::gfx::interop::VideoCaptureSlotRing& ring);
   ~MagewellInputBackend() override;
 
   bool open() override;
@@ -55,11 +55,11 @@ public:
   Video::ImageFormat imageFormat() const override;
   std::unique_ptr<score::gfx::GPUVideoDecoder>
   makeDecoder(Video::VideoMetadata& meta) override;
-  std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+  std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
   pickStrategy(QRhi::Implementation) override;
-  std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+  std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
   makeCpuStrategy() override;
-  void setStrategy(score::gfx::interop::GpuDirectCaptureStrategy* s) noexcept override;
+  void setStrategy(score::gfx::interop::VideoCaptureStrategy* s) noexcept override;
   void start() override;
   void stop() override;
 
@@ -67,10 +67,10 @@ private:
   void runLoop(); ///< Host-staged notify+capture reception loop.
 
   MagewellInputSettings m_settings;
-  score::gfx::interop::GpuDirectCaptureSlotRing& m_ring;
+  score::gfx::interop::VideoCaptureSlotRing& m_ring;
 
   HCHANNEL m_channel{nullptr};
-  score::gfx::interop::GpuDirectCaptureStrategy* m_strategy{};
+  score::gfx::interop::VideoCaptureStrategy* m_strategy{};
 
   MwEvent m_notifyEvent{mwNoEvent};
   MwEvent m_captureEvent{mwNoEvent};

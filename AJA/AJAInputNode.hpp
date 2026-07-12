@@ -27,7 +27,7 @@ struct SCORE_ADDON_VIDEOIO_EXPORT AJAInputNode final
   ~AJAInputNode() override;
 
   std::unique_ptr<score::gfx::DMACaptureBackend> makeCaptureBackend(
-      score::gfx::interop::GpuDirectCaptureSlotRing& ring) const override;
+      score::gfx::interop::VideoCaptureSlotRing& ring) const override;
 
   AJAInputSettings settings;
 };

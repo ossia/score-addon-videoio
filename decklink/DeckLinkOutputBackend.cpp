@@ -201,7 +201,7 @@ bool DeckLinkOutputBackend::open(score::gfx::GraphicsApi)
   }
 
   // Completion-tracked frame pool: the driver only ever sees these SDK-
-  // allocated frames, never HostStagedOutput's ring memory, so a frame's
+  // allocated frames, never CpuStagedVideoOutput's ring memory, so a frame's
   // bytes stay immutable from ScheduleVideoFrame until its completion (the
   // SignalGenerator sample's invariant). One pacing permit per pool frame.
   {
@@ -337,7 +337,7 @@ score::gfx::interop::VendorDmaRegistrar DeckLinkOutputBackend::registrar()
 bool DeckLinkOutputBackend::prefersGpuDownload() const noexcept
 {
 #if defined(SCORE_HAS_AJA_DVP_BRIDGE)
-  return true; // nv_dvp_bridge linked: HostStagedOutput can DVP texture->sysmem
+  return true; // nv_dvp_bridge linked: CpuStagedVideoOutput can DVP texture->sysmem
 #else
   return false;
 #endif

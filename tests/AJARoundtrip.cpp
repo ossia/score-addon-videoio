@@ -17,7 +17,7 @@
 #include <Gfx/Graph/Graph.hpp>
 #include <Gfx/Graph/RenderState.hpp>
 #include <Gfx/Graph/TexgenNode.hpp>
-#include <Gfx/Graph/interop/GpuDirectStrategy.hpp>
+#include <Gfx/Graph/interop/VideoOutputStrategy.hpp>
 #include <Gfx/Graph/interop/StageProfiler.hpp>
 
 #include "ShaderTexgenNode.hpp"

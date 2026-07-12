@@ -9,7 +9,7 @@
 
 namespace score::gfx::interop
 {
-struct GpuDirectCaptureSlotRing;
+struct VideoCaptureSlotRing;
 }
 
 namespace Gfx::DeckLink
@@ -39,7 +39,7 @@ class DeckLinkInputBackend final : public score::gfx::DMACaptureBackend
 public:
   DeckLinkInputBackend(
       DeckLinkInputSettings settings,
-      score::gfx::interop::GpuDirectCaptureSlotRing& ring);
+      score::gfx::interop::VideoCaptureSlotRing& ring);
   ~DeckLinkInputBackend() override;
 
   bool open() override;
@@ -49,11 +49,11 @@ public:
   Video::ImageFormat imageFormat() const override;
   std::unique_ptr<score::gfx::GPUVideoDecoder>
   makeDecoder(Video::VideoMetadata& meta) override;
-  std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+  std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
   pickStrategy(QRhi::Implementation impl) override;
-  std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+  std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
   makeCpuStrategy() override;
-  void setStrategy(score::gfx::interop::GpuDirectCaptureStrategy* s) noexcept override
+  void setStrategy(score::gfx::interop::VideoCaptureStrategy* s) noexcept override
   {
     m_strategy = s;
   }
@@ -62,7 +62,7 @@ public:
 
 private:
   DeckLinkInputSettings m_settings;
-  score::gfx::interop::GpuDirectCaptureSlotRing& m_ring;
+  score::gfx::interop::VideoCaptureSlotRing& m_ring;
 
   ComPtr<IDeckLink> m_device;
   ComPtr<IDeckLinkInput> m_input;
@@ -70,7 +70,7 @@ private:
   /// released — keep it alive while the capture runs (connector routing).
   ComPtr<IDeckLinkConfiguration> m_cfg;
   ComPtr<IDeckLinkInputCallback> m_callback;
-  score::gfx::interop::GpuDirectCaptureStrategy* m_strategy{};
+  score::gfx::interop::VideoCaptureStrategy* m_strategy{};
 
   int m_width{};
   int m_height{};

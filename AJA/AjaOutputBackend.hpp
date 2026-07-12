@@ -60,7 +60,7 @@ public:
   std::vector<score::gfx::interop::HostStagedPlane> planes() const override;
   score::gfx::interop::VendorDmaRegistrar registrar() override;
   score::gfx::DirectVideoOutputBackend::CustomStage customStage() override;
-  std::vector<std::function<std::unique_ptr<score::gfx::interop::GpuDirectStrategy>()>>
+  std::vector<std::function<std::unique_ptr<score::gfx::interop::VideoOutputStrategy>()>>
   gpuDirectCandidates(QRhi* rhi, score::gfx::GraphicsApi api) override;
   score::gfx::interop::PacedFramePump::Hooks pacingHooks() override;
 

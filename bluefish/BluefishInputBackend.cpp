@@ -4,7 +4,7 @@
 #include <bluefish/BluefishFormats.hpp>
 
 #include <Gfx/Graph/decoders/WireDecoderFactory.hpp>
-#include <Gfx/Graph/interop/GpuDirectCaptureStrategy.hpp>
+#include <Gfx/Graph/interop/VideoCaptureStrategy.hpp>
 #include <Gfx/Graph/interop/VideoPixelFormatAV.hpp>
 
 #include <Video/VideoInterface.hpp>
@@ -21,7 +21,7 @@ namespace Gfx::Bluefish
 
 BluefishInputBackend::BluefishInputBackend(
     BluefishInputSettings settings,
-    score::gfx::interop::GpuDirectCaptureSlotRing& ring)
+    score::gfx::interop::VideoCaptureSlotRing& ring)
     : m_settings{settings}, m_ring{ring}
 {
 }
@@ -116,21 +116,21 @@ BluefishInputBackend::makeDecoder(Video::VideoMetadata& meta)
       neutralFromMemFmt(m_settings.memoryFormat), meta);
 }
 
-std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
 BluefishInputBackend::pickStrategy(QRhi::Implementation)
 {
   // BlueGpuDirect (GPU-direct capture) is out of scope; always host-staged.
   return {};
 }
 
-std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
 BluefishInputBackend::makeCpuStrategy()
 {
   return std::make_unique<BluefishCpuCapture>();
 }
 
 void BluefishInputBackend::setStrategy(
-    score::gfx::interop::GpuDirectCaptureStrategy* s) noexcept
+    score::gfx::interop::VideoCaptureStrategy* s) noexcept
 {
   m_strategy = s;
 }

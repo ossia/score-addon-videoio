@@ -3,8 +3,8 @@
 #include <AJA/Tier3Common.hpp>
 #include <Gfx/Graph/encoders/ColorSpaceOut.hpp>
 #include <Gfx/Graph/interop/ComputeRingDispatcher.hpp>
-#include <Gfx/Graph/interop/GpuDirectStrategy.hpp>
-#include <Gfx/Graph/interop/GpuRingBuffer.hpp>
+#include <Gfx/Graph/interop/VideoOutputStrategy.hpp>
+#include <Gfx/Graph/interop/ImportedGpuBufferRing.hpp>
 #include <Gfx/Graph/interop/RdmaRingDepth.hpp>
 #include <Gfx/Graph/interop/StageProfiler.hpp>
 #include <Gfx/Graph/interop/VulkanCudaBounce.hpp>
@@ -23,7 +23,7 @@ namespace Gfx::AJA
  *
  * Same architecture as the GL path, with the CUDA↔graphics bridge
  * inverted: the QRhi compute encoder writes plain QRhi storage buffers
- * (GpuRingBuffer Vulkan plain mode), and one vkCmdCopyBuffer per frame
+ * (ImportedGpuBufferRing Vulkan plain mode), and one vkCmdCopyBuffer per frame
  * moves the encoded wire frame into a CUDA-VMM bounce that Vulkan
  * imported (VulkanCudaBounce). The bounce is CUDA-allocator memory, so
  * DMABufferLock(inRDMA=true) pins it exactly like the GL path's
@@ -33,7 +33,7 @@ namespace Gfx::AJA
  * Ordering: QRhi::finish() in prepareNextFrame() (mirrors the GL fence /
  * glFinish); timeline semaphores are a later optimisation.
  */
-struct RdmaInteropVulkanTier3 final : score::gfx::interop::GpuDirectStrategy
+struct RdmaInteropVulkanTier3 final : score::gfx::interop::VideoOutputStrategy
 {
   RdmaInteropVulkanTier3(CNTV2Card* card, NTV2FrameBufferFormat fmt) noexcept
       : m_card{card}, m_targetFormat{fmt} {}
@@ -43,7 +43,7 @@ struct RdmaInteropVulkanTier3 final : score::gfx::interop::GpuDirectStrategy
 
   QRhi* m_rhi{};
   std::uint32_t m_frameBytes{};
-  score::gfx::interop::GpuRingBuffer m_ring;
+  score::gfx::interop::ImportedGpuBufferRing m_ring;
   score::gfx::interop::ComputeRingDispatcher m_dispatcher;
   score::gfx::interop::VulkanCudaBounce m_bounce;
   std::vector<bool> m_pinned;
@@ -58,7 +58,7 @@ struct RdmaInteropVulkanTier3 final : score::gfx::interop::GpuDirectStrategy
            && tier3SupportsFormat(fmt, width);
   }
 
-  bool init(const score::gfx::interop::GpuDirectStrategyConfig& c) override
+  bool init(const score::gfx::interop::VideoOutputStrategyConfig& c) override
   {
     if(!isSupported(c.rhi, m_targetFormat, c.width) || !c.state)
     {
@@ -114,7 +114,7 @@ struct RdmaInteropVulkanTier3 final : score::gfx::interop::GpuDirectStrategy
       return false;
     }
 
-    score::gfx::interop::GpuRingBufferConfig rc{};
+    score::gfx::interop::ImportedGpuBufferRingConfig rc{};
     rc.rhi = c.rhi;
     rc.cudaCtx = nullptr; // Vulkan plain mode: no bridge import
     rc.bufferSize = c.frameByteSize;
@@ -204,12 +204,12 @@ struct RdmaInteropVulkanTier3 final : score::gfx::interop::GpuDirectStrategy
 
 #else // !SCORE_HAS_VULKAN_CUDA_BOUNCE
 
-struct RdmaInteropVulkanTier3 final : score::gfx::interop::GpuDirectStrategy
+struct RdmaInteropVulkanTier3 final : score::gfx::interop::VideoOutputStrategy
 {
   RdmaInteropVulkanTier3(CNTV2Card*, NTV2FrameBufferFormat) noexcept { }
   const char* name() const noexcept override { return "RDMA-Vulkan/T3-stub"; }
   static bool isSupported(QRhi*, NTV2FrameBufferFormat, int) { return false; }
-  bool init(const score::gfx::interop::GpuDirectStrategyConfig&) override
+  bool init(const score::gfx::interop::VideoOutputStrategyConfig&) override
   {
     return false;
   }

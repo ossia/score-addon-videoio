@@ -3,7 +3,7 @@
 #include <AJA/AJACaptureSession.hpp>
 #include <AJA/AjaFormatMap.hpp>
 #include <Gfx/Graph/decoders/WireDecoderFactory.hpp>
-#include <Gfx/Graph/interop/GpuDirectCaptureStrategy.hpp>
+#include <Gfx/Graph/interop/VideoCaptureStrategy.hpp>
 #include <Gfx/Graph/NodeRenderer.hpp>
 #include <Gfx/Graph/RenderList.hpp>
 #include <Gfx/Graph/decoders/GPUVideoDecoder.hpp>
@@ -73,7 +73,7 @@ namespace
  * Composes a `CaptureSession` for the AJA bookkeeping (open, channel
  * setup with quad-link / TSI / 12G routing, VPID HDR detection,
  * signal-change reroute, ANC + timecode metadata) and adds a per-VBI
- * loop that DMAs sysmem -> GPU texture via a GpuDirectCaptureStrategy.
+ * loop that DMAs sysmem -> GPU texture via a VideoCaptureStrategy.
  *
  * Per-VBI loop:
  *   1. WaitForInputVerticalInterrupt
@@ -96,7 +96,7 @@ class aja_gpu_capture
 {
 public:
   aja_gpu_capture(
-      const AJAInputSettings& s, score::gfx::interop::GpuDirectCaptureSlotRing& ring)
+      const AJAInputSettings& s, score::gfx::interop::VideoCaptureSlotRing& ring)
       : m_session{s}
       , m_ring{ring}
   {
@@ -105,7 +105,7 @@ public:
   /// Strategy is plumbed in *after* the card has been opened, since AJA
   /// strategies hold the card pointer as a member and we want a single
   /// place that owns the card handle (aja_gpu_capture / CaptureSession).
-  void setStrategy(score::gfx::interop::GpuDirectCaptureStrategy* s) noexcept
+  void setStrategy(score::gfx::interop::VideoCaptureStrategy* s) noexcept
   {
     m_strategy = s;
   }
@@ -326,8 +326,8 @@ private:
   }
 
   CaptureSession m_session;
-  score::gfx::interop::GpuDirectCaptureStrategy* m_strategy{};
-  score::gfx::interop::GpuDirectCaptureSlotRing& m_ring;
+  score::gfx::interop::VideoCaptureStrategy* m_strategy{};
+  score::gfx::interop::VideoCaptureSlotRing& m_ring;
   bool m_acStarted{false};
 
   std::thread m_thread;
@@ -339,7 +339,7 @@ private:
  *        QRhi backend + bridge availability. Mirrors the output
  *        side's strategy chain in AJAOutputNode::createOutput.
  */
-std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
 pickAjaCaptureStrategy(
     QRhi::Implementation backend, CNTV2Card* card, AJAInputPixelFormat pixfmt)
 {
@@ -406,7 +406,7 @@ class AJACaptureBackend final : public score::gfx::DMACaptureBackend
 public:
   AJACaptureBackend(
       const AJAInputSettings& s,
-      score::gfx::interop::GpuDirectCaptureSlotRing& ring)
+      score::gfx::interop::VideoCaptureSlotRing& ring)
       : m_capture{s, ring}
       , m_pixfmt{s.pixelFormat}
   {
@@ -433,20 +433,20 @@ public:
     return score::gfx::makeWireDecoder(ajaInputFormatTo(m_pixfmt), meta);
   }
 
-  std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+  std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
   pickStrategy(QRhi::Implementation backend) override
   {
     return pickAjaCaptureStrategy(backend, m_capture.card(), m_pixfmt);
   }
 
-  std::unique_ptr<score::gfx::interop::GpuDirectCaptureStrategy>
+  std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
   makeCpuStrategy() override
   {
     return std::make_unique<CaptureInteropCpu>(m_capture.card(), m_pixfmt);
   }
 
   void
-  setStrategy(score::gfx::interop::GpuDirectCaptureStrategy* s) noexcept override
+  setStrategy(score::gfx::interop::VideoCaptureStrategy* s) noexcept override
   {
     m_capture.setStrategy(s);
   }
@@ -471,7 +471,7 @@ AJAInputNode::~AJAInputNode() = default;
 
 std::unique_ptr<score::gfx::DMACaptureBackend>
 AJAInputNode::makeCaptureBackend(
-    score::gfx::interop::GpuDirectCaptureSlotRing& ring) const
+    score::gfx::interop::VideoCaptureSlotRing& ring) const
 {
   return std::make_unique<AJACaptureBackend>(settings, ring);
 }
