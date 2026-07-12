@@ -213,7 +213,7 @@ std::vector<
     std::function<std::unique_ptr<score::gfx::interop::VideoOutputStrategy>()>>
 DeltacastOutputBackend::gpuDirectCandidates(QRhi* rhi, score::gfx::GraphicsApi)
 {
-  // RDMA GPU-direct playout (Seam B) is the Vulkan-only / CUDA-only fast path.
+  // RDMA GPU-direct playout is the Vulkan-only / CUDA-only fast path.
   // On any other backend (or when RDMA is disabled / no CUDA driver) return {}
   // so the node falls back to the host-staged path (unchanged).
   if(!m_settings.useRDMA || !rhi || rhi->backend() != QRhi::Vulkan

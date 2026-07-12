@@ -27,7 +27,7 @@ namespace Gfx::AJA
 {
 
 /**
- * @brief Vulkan tier-3 zero-copy capture (Design B: CUDA buffer->image copy).
+ * @brief Vulkan zero-copy capture (CUDA buffer->image copy).
  *
  * The symmetric inverse of AjaRdmaCaptureGL for the Vulkan backend. Unlike
  * GL — where the AJA-DMA'd buffer is uploaded into the decoder's texture with a

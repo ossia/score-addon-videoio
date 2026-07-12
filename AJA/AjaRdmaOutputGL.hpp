@@ -12,7 +12,7 @@ namespace Gfx::AJA
 {
 
 /**
- * @brief OpenGL tier-3 RDMA output for AJA. Thin shim over
+ * @brief OpenGL RDMA output for AJA. Thin shim over
  *        `score::gfx::interop::RdmaVideoOutput`.
  */
 struct AjaRdmaOutputGL final : score::gfx::interop::VideoOutputStrategy

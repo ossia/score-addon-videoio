@@ -18,7 +18,7 @@ ajaMakeWireEncoder(NTV2FrameBufferFormat fmt)
   return score::gfx::makeWireComputeEncoder(ntv2FormatTo(fmt));
 }
 
-/// Returns true when (format, width) is something the tier-3 compute
+/// Returns true when (format, width) is something the compute
 /// encoders can handle: v210 needs width % 6 == 0; UYVY needs width % 2 == 0;
 /// BGRA has no constraint.
 inline bool ajaWireEncoderSupports(NTV2FrameBufferFormat fmt, int width)

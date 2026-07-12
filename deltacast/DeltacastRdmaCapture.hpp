@@ -1,7 +1,7 @@
 #pragma once
 /**
  * @file DeltacastRdmaCapture.hpp
- * @brief DELTACAST RDMA GPU-direct capture (Vulkan QRhi + CUDA) — "Seam B".
+ * @brief DELTACAST RDMA GPU-direct capture (Vulkan QRhi + CUDA).
  *
  * The true GPU-direct counterpart to DeltacastCpuCapture: the Deltacast card
  * DMAs each received frame straight into RDMA-capable GPU VRAM (a CUDA VMM
@@ -63,10 +63,10 @@ namespace Gfx::Deltacast
 {
 
 /**
- * @brief Vulkan tier-3 zero-copy capture for Deltacast (CUDA buffer->image copy).
+ * @brief Vulkan zero-copy capture for Deltacast (CUDA buffer->image copy).
  *
- * Consumes the existing score-plugin-gfx primitives RdmaGpuBuffer (Seam B
- * allocator) + CudaInterop (the Vulkan-image import and the per-frame
+ * Consumes the existing score-plugin-gfx primitives RdmaGpuBuffer
+ * allocator + CudaInterop (the Vulkan-image import and the per-frame
  * buffer->array copy). No new GPU primitive is introduced.
  */
 struct DeltacastRdmaCapture final : score::gfx::interop::VideoCaptureStrategy
@@ -180,7 +180,7 @@ struct DeltacastRdmaCapture final : score::gfx::interop::VideoCaptureStrategy
         return releaseFail("QRhiTexture::createFrom");
     }
 
-    // 2. RDMA-capable GPU VRAM slots (Seam B). Each slot.gpuVA is the card's
+    // 2. RDMA-capable GPU VRAM slots. Each slot.gpuVA is the card's
     //    DMA target (VHD_CreateSlotEx RDMAEnabled=TRUE) and the CUDA copy
     //    source. The CUDA primary context is current (cuda_interop_init), so the
     //    VMM allocations land on device 0.

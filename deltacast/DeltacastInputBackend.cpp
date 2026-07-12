@@ -124,7 +124,7 @@ DeltacastInputBackend::makeDecoder(Video::VideoMetadata& meta)
 std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
 DeltacastInputBackend::pickStrategy(QRhi::Implementation impl)
 {
-  // RDMA GPU-direct (Seam B) is the Vulkan-only / CUDA-only fast path. On any
+  // RDMA GPU-direct is the Vulkan-only / CUDA-only fast path. On any
   // other backend (or when RDMA is disabled / no CUDA driver) return {} so the
   // node falls back to makeCpuStrategy() (host-staged, unchanged).
   if(!m_settings.useRDMA || impl != QRhi::Vulkan || !cuda_interop_available())

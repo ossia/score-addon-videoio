@@ -10,12 +10,12 @@ namespace Gfx::AJA
 {
 
 /**
- * @brief D3D12 tier-3 RDMA output for AJA — STUB.
+ * @brief D3D12 RDMA output for AJA — STUB.
  *
  * QRhi D3D12 backend allocates StorageBuffers via D3D12MA on a regular
  * DEFAULT heap with no `D3D12_HEAP_FLAG_SHARED` and no NT-shared handle
  * — so `cudaImportExternalMemory(D3D12_RESOURCE)` cannot pick them up.
- * Same dispatch-side gap as Vulkan tier-3 output: would need raw D3D12
+ * Same dispatch-side gap as Vulkan output: would need raw D3D12
  * compute via `QRhi::beginExternal` against an externally-allocated
  * SHARED+UAV resource. AJA's Windows driver also doesn't expose
  * `DMABufferLock(inRDMA=true)` so this is dead-on-Windows-AJA today —

@@ -254,7 +254,7 @@ AjaOutputBackend::gpuDirectCandidates(QRhi* rhi, score::gfx::GraphicsApi api)
       });
 #endif
   }
-  // Tier-3 RDMA (Linux; on Windows these init() to false).
+  // RDMA (Linux; on Windows these init() to false).
   if(allowRdma && rhi && rhi->isFeatureSupported(QRhi::Compute)
      && ajaWireEncoderSupports(m_bufferFormat, m_settings.width))
   {
@@ -291,8 +291,8 @@ score::gfx::interop::PacedFramePump::Hooks AjaOutputBackend::pacingHooks()
 
 std::function<bool()> AjaOutputBackend::genlockTickSource()
 {
-  // Phase 2 (opt-in): expose the output-channel VBI as an ExternalGenlockClock
-  // pull facet so the render can be phase-locked to the card's genlock. This is
+  // Opt-in: expose the output-channel VBI as an ExternalGenlockClock pull
+  // facet so the render can be phase-locked to the card's genlock. This is
   // a second waiter on the same VBI the submit pump uses (see waitForVBI); the
   // Linux AJA VBI is a broadcast wait-queue, so both waiters wake per interrupt.
   return [this] { return waitForVBI(); };
@@ -422,7 +422,7 @@ bool AjaOutputBackend::initializeAJADevice()
     return false;
   }
 
-  // BISECT phase 5: re-enable AcquireStream + OEM mode, plus the
+  // Re-enable AcquireStream + OEM mode, plus the
   // missing SetMultiFormatMode(false). The 8K demo at
   // ntv2player8k.cpp:142-145 sets multi-format mode explicitly:
   //   if (CanDoMultiFormat()) SetMultiFormatMode(fDoMultiFormat);
@@ -715,7 +715,7 @@ bool AjaOutputBackend::initializeAJADevice()
   // malformed 12G signal — the receiver then misdetects it (e.g. 1080p60a sent
   // as "1080p60b @ 30") and captures garbage. Setting both bits every time
   // makes output setup self-sufficient against stale card state.
-  // NOTE (review 2026-07, kept as-is deliberately): the demos program 12G
+  // NOTE (kept as-is deliberately): the demos program 12G
   // differently — ntv2player4k touches only CH3 and only with link grouping;
   // plain quad-link 3G leaves both bits off. This exact code (12G bit on all
   // active spigots, incl. quad-link 4x1920x1080p) passed the full hardware

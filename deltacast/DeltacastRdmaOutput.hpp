@@ -1,7 +1,7 @@
 #pragma once
 /**
  * @file DeltacastRdmaOutput.hpp
- * @brief DELTACAST RDMA GPU-direct playout (Vulkan QRhi + CUDA) — output "Seam B".
+ * @brief DELTACAST RDMA GPU-direct playout (Vulkan QRhi + CUDA).
  *
  * The true GPU-direct counterpart to the host-staged Deltacast playout path and
  * the symmetric inverse of DeltacastRdmaCapture: instead of
@@ -75,8 +75,8 @@ namespace Gfx::Deltacast
 /**
  * @brief Vulkan GPU-direct (CUDA array->buffer) playout strategy for Deltacast.
  *
- * Consumes the existing score-plugin-gfx primitives RdmaGpuBuffer (Seam B
- * allocator), CudaInterop (the Vulkan-image import + the per-frame
+ * Consumes the existing score-plugin-gfx primitives RdmaGpuBuffer (the GPU
+ * buffer allocator), CudaInterop (the Vulkan-image import + the per-frame
  * array->buffer copy) and makeWireEncoder. No new GPU primitive is introduced.
  */
 struct DeltacastRdmaOutput final : score::gfx::interop::VideoOutputStrategy
@@ -234,7 +234,7 @@ struct DeltacastRdmaOutput final : score::gfx::interop::VideoOutputStrategy
         return releaseFail("QRhiTexture::createFrom");
     }
 
-    // 3. RDMA-capable GPU VRAM slots (Seam B). Each slot.gpuVA is the CUDA copy
+    // 3. RDMA-capable GPU VRAM slots. Each slot.gpuVA is the CUDA copy
     //    destination and the card's DMA source. The CUDA primary context is
     //    current (cuda_interop_init), so the VMM allocations land on device 0.
     if(!m_rdma.create(

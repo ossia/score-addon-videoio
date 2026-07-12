@@ -22,7 +22,7 @@ namespace Gfx::AJA
 {
 
 /**
- * @brief OpenGL tier-3 capture: AJA SDI → P2P DMA → CUDA bounce buffer →
+ * @brief OpenGL zero-copy RDMA capture: AJA SDI → P2P DMA → CUDA bounce buffer →
  *        DtoD copy → GL StorageBuffer → glTexSubImage2D → QRhi GL texture.
  *
  * Symmetric inverse of `AjaRdmaOutputGL` (the OUTPUT path). The
@@ -315,7 +315,7 @@ struct AjaRdmaCaptureGL final : score::gfx::interop::VideoCaptureStrategy
     // allocated for GL_SHADER_STORAGE_BUFFER — both are server-side memory and
     // the binding target picks the usage.
     //
-    // KNOWN LIMITATION (review 2026-07): CudaInterop maps the registered GL
+    // KNOWN LIMITATION: CudaInterop maps the registered GL
     // buffer once and keeps it mapped for its lifetime, and CUDA specifies
     // that accessing a registered resource through GL *while mapped* is
     // undefined. Fixing it properly means per-access map/unmap in the bridge
@@ -323,7 +323,7 @@ struct AjaRdmaCaptureGL final : score::gfx::interop::VideoCaptureStrategy
     // gpuVA in ImportedGpuBufferRing/consumers must be refreshed each frame) — a
     // redesign to do together with the first Linux GL bring-up, not blindly.
     // In practice NVIDIA keeps the mapping coherent here, but do not ship the
-    // Linux GL tier-3 path without revisiting this.
+    // Linux GL RDMA path without revisiting this.
     auto& slot = m_ring.slot(static_cast<std::size_t>(slotIdx));
     if(!slot.qrhiBuffer || !slot.cudaHandle)
       return;

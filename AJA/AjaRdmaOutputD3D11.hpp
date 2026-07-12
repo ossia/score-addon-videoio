@@ -11,7 +11,7 @@ namespace Gfx::AJA
 {
 
 /**
- * @brief D3D11 tier-3 RDMA output for AJA.
+ * @brief D3D11 RDMA output for AJA.
  *
  * Thin shim over `score::gfx::interop::RdmaVideoOutput`. AJA-specific
  * bits (card handle, NTV2 format enum) are held by this class; the
