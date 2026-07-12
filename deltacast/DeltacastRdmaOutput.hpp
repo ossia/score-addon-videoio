@@ -5,13 +5,13 @@
  *
  * The true GPU-direct counterpart to the host-staged Deltacast playout path and
  * the symmetric inverse of DeltacastRdmaCapture: instead of
- * (card -> VRAM -> cuda_p2p_copy_buffer_to_array -> decoder texture), the output
- * path is (RGBA scene -> wire encoder texture -> cuda_p2p_copy_array_to_buffer
+ * (card -> VRAM -> cuda_interop_copy_buffer_to_array -> decoder texture), the output
+ * path is (RGBA scene -> wire encoder texture -> cuda_interop_copy_array_to_buffer
  * -> RDMA-capable GPU VRAM -> the card DMAs it out). No host transit.
  *
  * Reuses, verbatim, the same primitives the capture strategy uses:
- *   - the Vulkan-handle acquisition + cuda_p2p_init + CudaFunctions load,
- *   - an exportable VkImage adopted as a QRhiTexture + cuda_p2p_import_vulkan_image,
+ *   - the Vulkan-handle acquisition + cuda_interop_init + CudaFunctions load,
+ *   - an exportable VkImage adopted as a QRhiTexture + cuda_interop_import_vulkan_image,
  *   - RdmaGpuBuffer(RdmaGpuApi::Cuda) for the per-slot RDMA GPU VRAM,
  * plus the shared wire encoder (score::gfx::makeWireEncoder + the encoder's
  * outputTexture() virtual) for the RGBA->wire conversion.
@@ -48,7 +48,7 @@
 #include <Gfx/Graph/encoders/GPUVideoEncoder.hpp>
 #include <Gfx/Graph/encoders/WireEncoderFactory.hpp>
 #include <Gfx/Graph/interop/CudaFunctions.hpp>
-#include <Gfx/Graph/interop/CudaP2PBridge.h>
+#include <Gfx/Graph/interop/CudaInterop.h>
 #include <Gfx/Graph/interop/VideoOutputStrategy.hpp>
 #include <Gfx/Graph/interop/InteropFence.hpp>
 #include <Gfx/Graph/interop/RdmaGpuBuffer.hpp>
@@ -76,7 +76,7 @@ namespace Gfx::Deltacast
  * @brief Vulkan GPU-direct (CUDA array->buffer) playout strategy for Deltacast.
  *
  * Consumes the existing score-plugin-gfx primitives RdmaGpuBuffer (Seam B
- * allocator), CudaP2PBridge (the Vulkan-image import + the per-frame
+ * allocator), CudaInterop (the Vulkan-image import + the per-frame
  * array->buffer copy) and makeWireEncoder. No new GPU primitive is introduced.
  */
 struct DeltacastRdmaOutput final : score::gfx::interop::VideoOutputStrategy
@@ -102,9 +102,9 @@ struct DeltacastRdmaOutput final : score::gfx::interop::VideoOutputStrategy
   VkQueue m_gfxQueue{VK_NULL_HANDLE};
   int m_gfxFamily{-1};
 
-  // CUDA P2P bridge context (owns its primary-context retain + stream) and a
+  // CUDA interop context (owns its primary-context retain + stream) and a
   // private dlopen'd driver-API table for the RdmaGpuBuffer allocations.
-  CudaP2PContextHandle m_cudaCtx{};
+  CudaInteropContextHandle m_cudaCtx{};
   score::gfx::CudaFunctions m_cuda{};
 
   // The RGBA->wire encoder. Its outputTexture() (encTex) is an RGBA8 texture
@@ -117,7 +117,7 @@ struct DeltacastRdmaOutput final : score::gfx::interop::VideoOutputStrategy
   // and the CUDA copy source into the RDMA slots.
   score::gfx::vkinterop::ExternalImage m_exportImg{};
   void* m_exportArray{};              // CUarray (copy source)
-  CudaP2PImageHandle m_exportHandle{};
+  CudaInteropImageHandle m_exportHandle{};
   QRhiTexture* m_exportTex{};
 
   // RDMA-capable GPU VRAM slots: each slot.gpuVA is the CUDA copy destination
@@ -146,7 +146,7 @@ struct DeltacastRdmaOutput final : score::gfx::interop::VideoOutputStrategy
     if(!m_backend || !cfg.rhi || !cfg.state || !cfg.sourceTexture
        || cfg.rhi->backend() != QRhi::Vulkan)
       return false;
-    if(!cuda_p2p_available())
+    if(!cuda_interop_available())
       return false;
 
     score::gfx::interop::VulkanRhiContext vkc;
@@ -159,7 +159,7 @@ struct DeltacastRdmaOutput final : score::gfx::interop::VideoOutputStrategy
 
     // Retain device 0's primary context on this (render) thread; the
     // RdmaGpuBuffer CUDA allocations below run against that current context.
-    if(cuda_p2p_init(&m_cudaCtx) != CUDA_P2P_SUCCESS || !m_cudaCtx)
+    if(cuda_interop_init(&m_cudaCtx) != CUDA_INTEROP_SUCCESS || !m_cudaCtx)
       return false;
     if(!m_cuda.load() || !m_cuda.vmmSupported)
       return releaseFail("CUDA driver / VMM unsupported");
@@ -216,15 +216,15 @@ struct DeltacastRdmaOutput final : score::gfx::interop::VideoOutputStrategy
           m_vk, m_exportImg.memory, vki::kOpaqueHandleType);
       if(!handle || !handle->isValid())
         return releaseFail("exportMemoryHandle(image)");
-      CudaP2PImageDesc cd{
+      CudaInteropImageDesc cd{
           std::uint32_t(encSize.width()), std::uint32_t(encSize.height()), 1, 4,
-          CUDA_P2P_FORMAT_UNSIGNED_INT8, 0};
-      if(cuda_p2p_import_vulkan_image(
+          CUDA_INTEROP_FORMAT_UNSIGNED_INT8, 0};
+      if(cuda_interop_import_vulkan_image(
              m_cudaCtx, handle->osHandle(), m_exportImg.size, &cd, 0,
              &m_exportArray, &m_exportHandle)
-             != CUDA_P2P_SUCCESS
+             != CUDA_INTEROP_SUCCESS
          || !m_exportArray)
-        return releaseFail("cuda_p2p_import_vulkan_image");
+        return releaseFail("cuda_interop_import_vulkan_image");
 
       m_exportTex = cfg.rhi->newTexture(
           QRhiTexture::RGBA8, encSize, 1, QRhiTexture::UsedAsTransferSource);
@@ -236,7 +236,7 @@ struct DeltacastRdmaOutput final : score::gfx::interop::VideoOutputStrategy
 
     // 3. RDMA-capable GPU VRAM slots (Seam B). Each slot.gpuVA is the CUDA copy
     //    destination and the card's DMA source. The CUDA primary context is
-    //    current (cuda_p2p_init), so the VMM allocations land on device 0.
+    //    current (cuda_interop_init), so the VMM allocations land on device 0.
     if(!m_rdma.create(
            {score::gfx::interop::RdmaGpuApi::Cuda, std::uint32_t(kSlotCount),
             cfg.frameByteSize, &m_cuda, /*cudaDevice=*/0}))
@@ -321,10 +321,10 @@ struct DeltacastRdmaOutput final : score::gfx::interop::VideoOutputStrategy
     if(tries == kSlotCount)
       return nullptr; // every slot in flight — drop this frame
 
-    if(cuda_p2p_copy_array_to_buffer(
+    if(cuda_interop_copy_array_to_buffer(
            m_cudaCtx, m_exportArray, m_rdma.slot(idx).gpuVA, m_rowBytes, m_texH,
            m_rowBytes)
-       != CUDA_P2P_SUCCESS)
+       != CUDA_INTEROP_SUCCESS)
       return nullptr;
     m_idx = (idx + 1) % kSlotCount;
     return m_rdma.slot(idx).gpuVA;
@@ -348,7 +348,7 @@ struct DeltacastRdmaOutput final : score::gfx::interop::VideoOutputStrategy
     // the node runs before releasing this strategy.
     m_rdma.destroy();
     if(m_exportHandle && m_cudaCtx)
-      cuda_p2p_release_image(m_cudaCtx, m_exportHandle);
+      cuda_interop_release_image(m_cudaCtx, m_exportHandle);
     m_exportHandle = {};
     m_exportArray = nullptr;
     delete m_exportTex;
@@ -362,7 +362,7 @@ struct DeltacastRdmaOutput final : score::gfx::interop::VideoOutputStrategy
     }
     m_encTex = nullptr;
     if(m_cudaCtx)
-      cuda_p2p_shutdown(m_cudaCtx);
+      cuda_interop_shutdown(m_cudaCtx);
     m_cudaCtx = nullptr;
   }
 

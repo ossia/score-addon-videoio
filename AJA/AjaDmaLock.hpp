@@ -16,7 +16,7 @@
  * P2P into VRAM).
  */
 
-#include <Gfx/Graph/interop/CudaP2PBridge.h>
+#include <Gfx/Graph/interop/CudaInterop.h>
 
 #include <ntv2card.h>
 
@@ -73,7 +73,7 @@ inline void ajaDmaUnlock(
  *         survived unchanged — callers should then fall back to CPU staging.
  */
 [[nodiscard]] inline bool ajaCaptureRdmaDelivers(
-    CNTV2Card* card, CudaP2PContextHandle cudaCtx,
+    CNTV2Card* card, CudaInteropContextHandle cudaCtx,
     std::uint32_t frameByteSize) noexcept
 {
   if(!card || !cudaCtx || frameByteSize == 0)
@@ -86,7 +86,7 @@ inline void ajaDmaUnlock(
       = frameByteSize < (64u * 1024) ? frameByteSize : (64u * 1024);
 
   void* gpu = nullptr;
-  if(cuda_p2p_alloc_buffer(cudaCtx, frameByteSize, &gpu) != CUDA_P2P_SUCCESS
+  if(cuda_interop_alloc_buffer(cudaCtx, frameByteSize, &gpu) != CUDA_INTEROP_SUCCESS
      || !gpu)
     return false;
 
@@ -95,8 +95,8 @@ inline void ajaDmaUnlock(
   {
     constexpr unsigned char kSentinel = 0xEE;
     std::vector<unsigned char> seed(probeBytes, kSentinel);
-    if(cuda_p2p_upload_buffer(cudaCtx, gpu, seed.data(), probeBytes)
-       == CUDA_P2P_SUCCESS)
+    if(cuda_interop_upload_buffer(cudaCtx, gpu, seed.data(), probeBytes)
+       == CUDA_INTEROP_SUCCESS)
     {
       // Real card→GPU transfer of framestore 0 into the pinned buffer.
       if(card->DMAReadFrame(
@@ -104,8 +104,8 @@ inline void ajaDmaUnlock(
              static_cast<ULWord>(probeBytes)))
       {
         std::vector<unsigned char> back(probeBytes, kSentinel);
-        if(cuda_p2p_download_buffer(cudaCtx, back.data(), gpu, probeBytes)
-           == CUDA_P2P_SUCCESS)
+        if(cuda_interop_download_buffer(cudaCtx, back.data(), gpu, probeBytes)
+           == CUDA_INTEROP_SUCCESS)
         {
           for(unsigned char b : back)
           {
@@ -120,7 +120,7 @@ inline void ajaDmaUnlock(
     }
     ajaDmaUnlock(card, gpu, frameByteSize);
   }
-  cuda_p2p_free_buffer(cudaCtx, gpu);
+  cuda_interop_free_buffer(cudaCtx, gpu);
 
   if(!delivered)
     qWarning() << "AJA capture RDMA probe: card→GPU P2P transfer did not "

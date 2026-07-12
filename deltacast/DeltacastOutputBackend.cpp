@@ -4,7 +4,7 @@
 #include <deltacast/DeltacastRdmaOutput.hpp>
 
 #include <Gfx/Graph/encoders/ColorSpaceOut.hpp>
-#include <Gfx/Graph/interop/CudaP2PBridge.h>
+#include <Gfx/Graph/interop/CudaInterop.h>
 
 #include <VideoMasterHD_ApplicationBuffers.h>
 
@@ -217,7 +217,7 @@ DeltacastOutputBackend::gpuDirectCandidates(QRhi* rhi, score::gfx::GraphicsApi)
   // On any other backend (or when RDMA is disabled / no CUDA driver) return {}
   // so the node falls back to the host-staged path (unchanged).
   if(!m_settings.useRDMA || !rhi || rhi->backend() != QRhi::Vulkan
-     || !cuda_p2p_available())
+     || !cuda_interop_available())
     return {};
 
   const auto neutral = neutralFromPacking(

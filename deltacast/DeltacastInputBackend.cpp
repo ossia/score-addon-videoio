@@ -5,7 +5,7 @@
 #include <deltacast/DeltacastRdmaCapture.hpp>
 
 #include <Gfx/Graph/decoders/WireDecoderFactory.hpp>
-#include <Gfx/Graph/interop/CudaP2PBridge.h>
+#include <Gfx/Graph/interop/CudaInterop.h>
 #include <Gfx/Graph/interop/VideoCaptureStrategy.hpp>
 #include <Gfx/Graph/interop/VideoPixelFormatAV.hpp>
 
@@ -127,7 +127,7 @@ DeltacastInputBackend::pickStrategy(QRhi::Implementation impl)
   // RDMA GPU-direct (Seam B) is the Vulkan-only / CUDA-only fast path. On any
   // other backend (or when RDMA is disabled / no CUDA driver) return {} so the
   // node falls back to makeCpuStrategy() (host-staged, unchanged).
-  if(!m_settings.useRDMA || impl != QRhi::Vulkan || !cuda_p2p_available())
+  if(!m_settings.useRDMA || impl != QRhi::Vulkan || !cuda_interop_available())
     return {};
   auto strat = std::make_unique<DeltacastRdmaCapture>();
   m_rdmaStrategy = strat.get();

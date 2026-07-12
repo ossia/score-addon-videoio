@@ -3,7 +3,7 @@
 #include <AJA/AjaDmaLock.hpp>
 
 #include <Gfx/Graph/interop/CaptureStrategyCommon.hpp>
-#include <Gfx/Graph/interop/CudaP2PBridge.h>
+#include <Gfx/Graph/interop/CudaInterop.h>
 #include <Gfx/Graph/interop/VideoCaptureStrategy.hpp>
 #include <Gfx/Graph/interop/RdmaRingDepth.hpp>
 #include <Gfx/Graph/interop/VkExternalMemoryHelpers.hpp>
@@ -44,7 +44,7 @@ namespace Gfx::AJA
  *       pointer, AJA DMABufferLock(inRDMA=true) so AutoCirculate P2P-DMAs the
  *       captured frame straight into that VRAM.
  *
- *   ingestFrame (capture thread): cuda_p2p_copy_buffer_to_array copies the slot
+ *   ingestFrame (capture thread): cuda_interop_copy_buffer_to_array copies the slot
  *     buffer -> the image's CUarray (stream-synced), then publishes the slot.
  *
  *   acquireForRender (render thread): nothing to upload — the image already
@@ -70,7 +70,7 @@ struct AjaRdmaCaptureVulkan final : score::gfx::interop::VideoCaptureStrategy
   VkQueue m_gfxQueue{VK_NULL_HANDLE};
   int m_gfxFamily{-1};
 
-  CudaP2PContextHandle m_cudaCtx{};
+  CudaInteropContextHandle m_cudaCtx{};
 
   static constexpr std::size_t kMaxSlots = 3;
   /// 2 at >=32 MB frames: pinned bounces live in the BAR1 aperture,
@@ -89,7 +89,7 @@ struct AjaRdmaCaptureVulkan final : score::gfx::interop::VideoCaptureStrategy
     // this strategy used to have).
     score::gfx::vkinterop::ExternalImage image{};
     void* imgFlatPtr{};             // flat CUDA view of the image memory
-    CudaP2PResourceHandle imgRes{};
+    CudaInteropResourceHandle imgRes{};
     std::uint64_t linOffset{};
     std::uint64_t linPitch{};
     QRhiTexture* ownedTex{};
@@ -113,7 +113,7 @@ struct AjaRdmaCaptureVulkan final : score::gfx::interop::VideoCaptureStrategy
     if(!score::gfx::interop::validateCaptureTextureBytes(
            cfg.outputTexture, cfg.frameByteSize, "AJA RDMA-IN(Vulkan/T3):"))
       return false;
-    if(!cuda_p2p_available())
+    if(!cuda_interop_available())
       return false;
 
     score::gfx::interop::VulkanRhiContext vkc;
@@ -124,7 +124,7 @@ struct AjaRdmaCaptureVulkan final : score::gfx::interop::VideoCaptureStrategy
     m_gfxQueue = vkc.gfxQueue;
     m_gfxFamily = vkc.gfxFamily;
 
-    if(cuda_p2p_init(&m_cudaCtx) != CUDA_P2P_SUCCESS || !m_cudaCtx)
+    if(cuda_interop_init(&m_cudaCtx) != CUDA_INTEROP_SUCCESS || !m_cudaCtx)
       return false;
 
     m_slotCount = score::gfx::interop::rdmaRingDepthForFrame(
@@ -150,8 +150,8 @@ struct AjaRdmaCaptureVulkan final : score::gfx::interop::VideoCaptureStrategy
       if(!createSlotImage(s, vkfmt, sz))
         return releaseFail("createSlotImage");
 
-      if(cuda_p2p_alloc_buffer(m_cudaCtx, cfg.frameByteSize, &s.bouncePtr)
-             != CUDA_P2P_SUCCESS
+      if(cuda_interop_alloc_buffer(m_cudaCtx, cfg.frameByteSize, &s.bouncePtr)
+             != CUDA_INTEROP_SUCCESS
          || !s.bouncePtr)
         return releaseFail("bounce alloc");
       if(!ajaDmaLock(m_card, s.bouncePtr, cfg.frameByteSize, /*rdma=*/true))
@@ -210,10 +210,10 @@ struct AjaRdmaCaptureVulkan final : score::gfx::interop::VideoCaptureStrategy
         = vki::exportMemoryHandle(m_vk, s.image.memory, vki::kOpaqueHandleType);
     if(!handle || !handle->isValid())
       return false;
-    if(cuda_p2p_import_vulkan_buffer(
+    if(cuda_interop_import_vulkan_buffer(
            m_cudaCtx, handle->osHandle(), s.image.size, &s.imgFlatPtr,
            &s.imgRes)
-           != CUDA_P2P_SUCCESS
+           != CUDA_INTEROP_SUCCESS
        || !s.imgFlatPtr)
       return false;
 
@@ -234,11 +234,11 @@ struct AjaRdmaCaptureVulkan final : score::gfx::interop::VideoCaptureStrategy
         ajaDmaUnlock(m_card, s.bouncePtr, cfg.frameByteSize);
       s.dmaLocked = false;
       if(s.bouncePtr && m_cudaCtx)
-        cuda_p2p_free_buffer(m_cudaCtx, s.bouncePtr);
+        cuda_interop_free_buffer(m_cudaCtx, s.bouncePtr);
       s.bouncePtr = nullptr;
 
       if(s.imgRes && m_cudaCtx)
-        cuda_p2p_release_buffer(m_cudaCtx, s.imgRes);
+        cuda_interop_release_buffer(m_cudaCtx, s.imgRes);
       s.imgRes = {};
       s.imgFlatPtr = nullptr;
       delete s.ownedTex;
@@ -249,7 +249,7 @@ struct AjaRdmaCaptureVulkan final : score::gfx::interop::VideoCaptureStrategy
     }
     m_renderIdx = 0;
     if(m_cudaCtx)
-      cuda_p2p_shutdown(m_cudaCtx);
+      cuda_interop_shutdown(m_cudaCtx);
     m_cudaCtx = nullptr;
     m_publisher.reset();
   }
@@ -269,11 +269,11 @@ struct AjaRdmaCaptureVulkan final : score::gfx::interop::VideoCaptureStrategy
     if(i >= m_slotCount || !m_slots[i].imgFlatPtr)
       return false;
     auto& s = m_slots[i];
-    if(cuda_p2p_copy_dtod_2d(
+    if(cuda_interop_copy_dtod_2d(
            m_cudaCtx,
            static_cast<char*>(s.imgFlatPtr) + s.linOffset, s.linPitch,
            s.bouncePtr, m_rowBytes, m_rowBytes, std::uint32_t(m_texH))
-       != CUDA_P2P_SUCCESS)
+       != CUDA_INTEROP_SUCCESS)
       return false;
     m_publisher.publish(i);
     return true;

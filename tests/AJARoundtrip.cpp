@@ -33,7 +33,7 @@
 // foundation). Gated like the AjaRdmaCaptureVulkan strategy.
 #if QT_CONFIG(vulkan) && defined(SCORE_HAS_AJA_CUDA_BRIDGE)
 #define AJA_HAS_VK_INTEROP_PROBE 1
-#include <Gfx/Graph/interop/CudaP2PBridge.h>
+#include <Gfx/Graph/interop/CudaInterop.h>
 #include <Gfx/Graph/interop/VkExternalMemoryHelpers.hpp>
 
 #include <score/gfx/Vulkan.hpp>
@@ -1384,11 +1384,11 @@ int runUploadBench(score::gfx::GraphicsApi api)
 #if defined(AJA_HAS_VK_INTEROP_PROBE)
 // Design-B core validation: map an exportable VkImage as a CUDA array and run
 // the per-frame buffer->array copy the strategy uses, seeding the source buffer
-// with a gradient. Validates createExportableImage + cuda_p2p_import_vulkan_image
-// + cuda_p2p_upload_buffer + cuda_p2p_copy_buffer_to_array on the real driver
+// with a gradient. Validates createExportableImage + cuda_interop_import_vulkan_image
+// + cuda_interop_upload_buffer + cuda_interop_copy_buffer_to_array on the real driver
 // (no AJA / peermem needed). Returns 0 on success.
 int runVkImageCopyPhase(
-    score::gfx::vkinterop::VulkanCtx& vk, CudaP2PContextHandle cudaCtx,
+    score::gfx::vkinterop::VulkanCtx& vk, CudaInteropContextHandle cudaCtx,
     void* srcBufferPtr, std::uint32_t texW, std::uint32_t texH)
 {
   namespace vki = score::gfx::vkinterop;
@@ -1418,21 +1418,21 @@ int runVkImageCopyPhase(
   }
   else
   {
-    CudaP2PImageDesc cdesc{texW, texH, 1, 4, CUDA_P2P_FORMAT_UNSIGNED_INT8, 0};
+    CudaInteropImageDesc cdesc{texW, texH, 1, 4, CUDA_INTEROP_FORMAT_UNSIGNED_INT8, 0};
     void* cuArray = nullptr;
-    CudaP2PImageHandle imgH{};
-    const auto ie = cuda_p2p_import_vulkan_image(
+    CudaInteropImageHandle imgH{};
+    const auto ie = cuda_interop_import_vulkan_image(
         cudaCtx, imgHandle->osHandle(), img->size, &cdesc, 0, &cuArray, &imgH);
-    if(ie != CUDA_P2P_SUCCESS || !cuArray)
+    if(ie != CUDA_INTEROP_SUCCESS || !cuArray)
     {
       std::printf(
-          "  [FAIL] cuda_p2p_import_vulkan_image: %s\n",
-          cuda_p2p_get_error_string(cudaCtx));
+          "  [FAIL] cuda_interop_import_vulkan_image: %s\n",
+          cuda_interop_get_error_string(cudaCtx));
       rc = 1;
     }
     else
     {
-      std::printf("  [ ok ] cuda_p2p_import_vulkan_image -> CUarray\n");
+      std::printf("  [ ok ] cuda_interop_import_vulkan_image -> CUarray\n");
       // Seed the source buffer with an RGBA gradient, then run the copy.
       std::vector<uint8_t> grad(std::size_t(texW) * texH * 4);
       for(std::uint32_t y = 0; y < texH; ++y)
@@ -1444,17 +1444,17 @@ int runVkImageCopyPhase(
           p[2] = 0x40;
           p[3] = 0xFF;
         }
-      if(cuda_p2p_upload_buffer(cudaCtx, srcBufferPtr, grad.data(), grad.size())
-         != CUDA_P2P_SUCCESS)
-        rc = fail("cuda_p2p_upload_buffer");
-      else if(cuda_p2p_copy_buffer_to_array(
+      if(cuda_interop_upload_buffer(cudaCtx, srcBufferPtr, grad.data(), grad.size())
+         != CUDA_INTEROP_SUCCESS)
+        rc = fail("cuda_interop_upload_buffer");
+      else if(cuda_interop_copy_buffer_to_array(
                   cudaCtx, srcBufferPtr, cuArray, texW * 4, texH, texW * 4)
-              != CUDA_P2P_SUCCESS)
-        rc = fail("cuda_p2p_copy_buffer_to_array");
+              != CUDA_INTEROP_SUCCESS)
+        rc = fail("cuda_interop_copy_buffer_to_array");
       else
         std::printf(
-            "  [ ok ] cuda_p2p_copy_buffer_to_array (buffer -> image)\n");
-      cuda_p2p_release_image(cudaCtx, imgH);
+            "  [ ok ] cuda_interop_copy_buffer_to_array (buffer -> image)\n");
+      cuda_interop_release_image(cudaCtx, imgH);
     }
   }
   vki::destroyExternal(vk, *img);
@@ -1516,34 +1516,34 @@ int runVkInteropProbe()
     std::printf("  [ ok ] exportMemoryHandle (handle=%p)\n", handle->osHandle());
 
     // 3. Import the FD into CUDA -> flat device pointer (what AJA would pin).
-    if(!cuda_p2p_available())
+    if(!cuda_interop_available())
     {
       std::printf("  [SKIP] CUDA not available on this host\n");
     }
     else
     {
-      CudaP2PContextHandle cudaCtx{};
-      if(cuda_p2p_init(&cudaCtx) != CUDA_P2P_SUCCESS || !cudaCtx)
+      CudaInteropContextHandle cudaCtx{};
+      if(cuda_interop_init(&cudaCtx) != CUDA_INTEROP_SUCCESS || !cudaCtx)
       {
-        rc = fail("cuda_p2p_init");
+        rc = fail("cuda_interop_init");
       }
       else
       {
         void* gpuPtr = nullptr;
-        CudaP2PResourceHandle res{};
-        const auto ie = cuda_p2p_import_vulkan_buffer(
+        CudaInteropResourceHandle res{};
+        const auto ie = cuda_interop_import_vulkan_buffer(
             cudaCtx, handle->osHandle(), frameBytes, &gpuPtr, &res);
-        if(ie != CUDA_P2P_SUCCESS || !gpuPtr)
+        if(ie != CUDA_INTEROP_SUCCESS || !gpuPtr)
         {
           std::printf(
-              "  [FAIL] cuda_p2p_import_vulkan_buffer: %s\n",
-              cuda_p2p_get_error_string(cudaCtx));
+              "  [FAIL] cuda_interop_import_vulkan_buffer: %s\n",
+              cuda_interop_get_error_string(cudaCtx));
           rc = 1;
         }
         else
         {
           std::printf(
-              "  [ ok ] cuda_p2p_import_vulkan_buffer -> CUdeviceptr %p\n",
+              "  [ ok ] cuda_interop_import_vulkan_buffer -> CUdeviceptr %p\n",
               gpuPtr);
 
           // --- Design B core: map a VkImage as a CUDA array and run the
@@ -1559,9 +1559,9 @@ int runVkInteropProbe()
                 " only unverified step (AJA DMABufferLock inRDMA=true) needs"
                 "\n  nvidia-peermem + a GPUDirect-RDMA-capable setup.\n");
 
-          cuda_p2p_release_buffer(cudaCtx, res); // also closes the imported fd
+          cuda_interop_release_buffer(cudaCtx, res); // also closes the imported fd
         }
-        cuda_p2p_shutdown(cudaCtx);
+        cuda_interop_shutdown(cudaCtx);
       }
     }
   }

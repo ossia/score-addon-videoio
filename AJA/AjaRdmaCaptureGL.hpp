@@ -3,7 +3,7 @@
 
 #include <Gfx/Graph/interop/GLCaptureUpload.hpp>
 #include <Gfx/Graph/interop/VideoCaptureStrategy.hpp>
-#include <Gfx/Graph/interop/CudaP2PBridge.h>
+#include <Gfx/Graph/interop/CudaInterop.h>
 #include <Gfx/Graph/interop/ImportedGpuBufferRing.hpp>
 #include <Gfx/Graph/interop/RdmaRingDepth.hpp>
 #include <Gfx/Graph/interop/StageProfiler.hpp>
@@ -66,7 +66,7 @@ struct AjaRdmaCaptureGL final : score::gfx::interop::VideoCaptureStrategy
   AJAInputPixelFormat m_pixelFormat{};
 
   QOpenGLContext* m_glCtx{};
-  CudaP2PContextHandle m_cudaCtx{};
+  CudaInteropContextHandle m_cudaCtx{};
   score::gfx::interop::ImportedGpuBufferRing m_ring;
 
   static constexpr std::size_t kMaxSlots = 3;
@@ -89,7 +89,7 @@ struct AjaRdmaCaptureGL final : score::gfx::interop::VideoCaptureStrategy
   // two render-thread VRAM copies (DtoD→SSBO + glTexSubImage2D upload) into a
   // single DtoD→texture-array. Non-null when engaged; when the register fails
   // at init we leave it null and fall back to the SSBO-ring (m_ring) path.
-  CudaP2PResourceHandle m_texRes{};
+  CudaInteropResourceHandle m_texRes{};
   bool m_imageInterop{false};
   int m_texW{}, m_texH{};
   std::uint32_t m_rowBytes{};
@@ -107,7 +107,7 @@ struct AjaRdmaCaptureGL final : score::gfx::interop::VideoCaptureStrategy
         cfg.frameByteSize, {/*full=*/int(kMaxSlots), /*large=*/2});
     if(!cfg.rhi || !m_card || !cfg.outputTexture)
       return false;
-    if(!cuda_p2p_available())
+    if(!cuda_interop_available())
     {
       qDebug() << "AJA RDMA-IN(GL/T3): GPUDirect RDMA not available";
       return false;
@@ -119,7 +119,7 @@ struct AjaRdmaCaptureGL final : score::gfx::interop::VideoCaptureStrategy
       return false;
     m_glCtx = native->context;
 
-    if(cuda_p2p_init(&m_cudaCtx) != CUDA_P2P_SUCCESS || !m_cudaCtx)
+    if(cuda_interop_init(&m_cudaCtx) != CUDA_INTEROP_SUCCESS || !m_cudaCtx)
       return false;
 
     // Pinning a GPU buffer is necessary but NOT sufficient: on cross-host-bridge
@@ -146,12 +146,12 @@ struct AjaRdmaCaptureGL final : score::gfx::interop::VideoCaptureStrategy
     // inRDMA=true only pins CUDA-allocator memory, never GL-owned memory).
     for(std::size_t i = 0; i < m_slotCount; ++i)
     {
-      if(cuda_p2p_alloc_buffer(m_cudaCtx, cfg.frameByteSize, &m_bounce[i])
-             != CUDA_P2P_SUCCESS
+      if(cuda_interop_alloc_buffer(m_cudaCtx, cfg.frameByteSize, &m_bounce[i])
+             != CUDA_INTEROP_SUCCESS
          || !m_bounce[i])
       {
         qWarning() << "AJA RDMA-IN(GL/T3): bounce alloc slot" << i << "failed:"
-                   << cuda_p2p_get_error_string(m_cudaCtx);
+                   << cuda_interop_get_error_string(m_cudaCtx);
         release();
         return false;
       }
@@ -188,8 +188,8 @@ struct AjaRdmaCaptureGL final : score::gfx::interop::VideoCaptureStrategy
        tryImage && nt.object)
     {
       const auto glTex = static_cast<std::uint32_t>(nt.object);
-      if(cuda_p2p_register_gl_image(m_cudaCtx, glTex, GL_TEXTURE_2D, &m_texRes)
-             == CUDA_P2P_SUCCESS
+      if(cuda_interop_register_gl_image(m_cudaCtx, glTex, GL_TEXTURE_2D, &m_texRes)
+             == CUDA_INTEROP_SUCCESS
          && m_texRes)
       {
         m_imageInterop = true;
@@ -199,7 +199,7 @@ struct AjaRdmaCaptureGL final : score::gfx::interop::VideoCaptureStrategy
       else
       {
         qDebug() << "AJA RDMA-IN(GL/T3): image-interop register failed ("
-                 << cuda_p2p_get_error_string(m_cudaCtx)
+                 << cuda_interop_get_error_string(m_cudaCtx)
                  << "); falling back to SSBO+PBO path";
       }
     }
@@ -228,16 +228,16 @@ struct AjaRdmaCaptureGL final : score::gfx::interop::VideoCaptureStrategy
         ajaDmaUnlock(m_card, m_bounce[i], cfg.frameByteSize);
       m_dmaLocked[i] = false;
       if(m_bounce[i] && m_cudaCtx)
-        cuda_p2p_free_buffer(m_cudaCtx, m_bounce[i]);
+        cuda_interop_free_buffer(m_cudaCtx, m_bounce[i]);
       m_bounce[i] = nullptr;
     }
     if(m_texRes && m_cudaCtx)
-      cuda_p2p_release_buffer(m_cudaCtx, m_texRes);
+      cuda_interop_release_buffer(m_cudaCtx, m_texRes);
     m_texRes = nullptr;
     m_imageInterop = false;
     m_ring.destroy();
     if(m_cudaCtx)
-      cuda_p2p_shutdown(m_cudaCtx);
+      cuda_interop_shutdown(m_cudaCtx);
     m_cudaCtx = nullptr;
     m_glCtx = nullptr;
     m_publisher.reset();
@@ -294,13 +294,13 @@ struct AjaRdmaCaptureGL final : score::gfx::interop::VideoCaptureStrategy
       // same coherency discipline the buffer path relied on). No SSBO staging,
       // no glTexSubImage2D upload.
       score::gfx::interop::StageProfiler::Scope prof{m_profImage};
-      if(cuda_p2p_gl_write_image(
+      if(cuda_interop_gl_write_image(
              m_cudaCtx, m_texRes, bounce, m_rowBytes, std::uint32_t(m_texH),
              m_rowBytes)
-         != CUDA_P2P_SUCCESS)
+         != CUDA_INTEROP_SUCCESS)
       {
         qWarning() << "AJA RDMA-IN(GL/T3): image write failed:"
-                   << cuda_p2p_get_error_string(m_cudaCtx);
+                   << cuda_interop_get_error_string(m_cudaCtx);
       }
       return;
     }
@@ -315,7 +315,7 @@ struct AjaRdmaCaptureGL final : score::gfx::interop::VideoCaptureStrategy
     // allocated for GL_SHADER_STORAGE_BUFFER — both are server-side memory and
     // the binding target picks the usage.
     //
-    // KNOWN LIMITATION (review 2026-07): CudaP2PBridge maps the registered GL
+    // KNOWN LIMITATION (review 2026-07): CudaInterop maps the registered GL
     // buffer once and keeps it mapped for its lifetime, and CUDA specifies
     // that accessing a registered resource through GL *while mapped* is
     // undefined. Fixing it properly means per-access map/unmap in the bridge
@@ -334,13 +334,13 @@ struct AjaRdmaCaptureGL final : score::gfx::interop::VideoCaptureStrategy
     // coherent data. A plain copy into a permanently-mapped buffer is NOT
     // seen by GL (the copy lands but GL samples stale memory).
     if(!m_bounce[static_cast<std::size_t>(slotIdx)]
-       || cuda_p2p_gl_write_buffer(
+       || cuda_interop_gl_write_buffer(
               m_cudaCtx, slot.cudaHandle,
               m_bounce[static_cast<std::size_t>(slotIdx)], cfg.frameByteSize)
-              != CUDA_P2P_SUCCESS)
+              != CUDA_INTEROP_SUCCESS)
     {
       qWarning() << "AJA RDMA-IN(GL/T3): bounce copy failed:"
-                 << cuda_p2p_get_error_string(m_cudaCtx);
+                 << cuda_interop_get_error_string(m_cudaCtx);
       return;
     }
 
