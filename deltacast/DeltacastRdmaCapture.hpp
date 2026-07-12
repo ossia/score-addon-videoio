@@ -46,6 +46,7 @@
 #include <Gfx/Graph/interop/GpuDirectCaptureStrategy.hpp>
 #include <Gfx/Graph/interop/RdmaGpuBuffer.hpp>
 #include <Gfx/Graph/interop/VkExternalMemoryHelpers.hpp>
+#include <Gfx/Graph/interop/VulkanRhiContext.hpp>
 
 #include <score/gfx/Vulkan.hpp>
 
@@ -112,16 +113,13 @@ struct DeltacastRdmaCapture final : score::gfx::interop::GpuDirectCaptureStrateg
     if(!cuda_p2p_available())
       return false;
 
-    auto* h = static_cast<const QRhiVulkanNativeHandles*>(cfg.rhi->nativeHandles());
-    QVulkanInstance* qInst = score::gfx::staticVulkanInstance(false);
-    if(!h || !h->dev || !h->physDev || !qInst)
+    score::gfx::interop::VulkanRhiContext vkc;
+    if(!score::gfx::interop::acquireVulkanRhiContext(cfg.rhi, vkc))
       return false;
-    m_vk = {qInst->vkInstance(), h->physDev, h->dev, qInst};
-    m_devFuncs = qInst->deviceFunctions(h->dev);
-    m_gfxQueue = h->gfxQueue;
-    m_gfxFamily = h->gfxQueueFamilyIdx;
-    if(!m_devFuncs || !m_gfxQueue || m_gfxFamily < 0)
-      return false;
+    m_vk = vkc.vk;
+    m_devFuncs = vkc.devFuncs;
+    m_gfxQueue = vkc.gfxQueue;
+    m_gfxFamily = vkc.gfxFamily;
 
     // The bridge retains device 0's primary context and makes it current on
     // this (render) thread; the RdmaGpuBuffer CUDA allocations below run
