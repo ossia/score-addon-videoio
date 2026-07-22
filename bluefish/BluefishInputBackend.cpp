@@ -234,6 +234,18 @@ void BluefishInputBackend::runLoop()
         writeIdx = (writeIdx + 1) % slots;
       }
     }
+    else if(info.pBufferVideo && info.VideoModeExt != m_videoModeExt)
+    {
+      // Live input mode change: publish the new geometry so the render thread
+      // rebuilds; open() re-derives the raster from the wire on re-open.
+      BLUE_U32 nw = 0, nh = 0, nbpl = 0, nbpf = 0, ngold = 0;
+      bfcGetVideoInfo(
+          info.VideoModeExt, UPD_FMT_FRAME,
+          static_cast<EMemoryFormat>(m_settings.memoryFormat), &nw, &nh, &nbpl,
+          &nbpf, &ngold);
+      if(nw > 0 && nh > 0)
+        m_ring.publishFormat(int(nw), int(nh), -1, 0.0);
+    }
 
     bfcAutoCaptureReturnBuffer(m_bvc, &info);
   }

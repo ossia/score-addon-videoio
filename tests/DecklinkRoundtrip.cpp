@@ -594,6 +594,106 @@ void printMatrix(const std::vector<Result>& rows)
         r.minPsnr, r.status.c_str());
 }
 
+// Live input-resolution switch: one persistent Auto receiver, the output driven
+// at mode A then rebuilt at mode B mid-stream. Exercises the DMACaptureInputNode
+// format-change rebuild + the DeckLink autoDetect producer end to end.
+int runLiveSwitch(const Options& opt, const std::vector<VMode>& vmodes, const PFmt& pf)
+{
+  auto findMode = [&](const std::string& sub) -> const VMode* {
+    for(const auto& v : vmodes)
+      if(v.name.find(sub) != std::string::npos)
+        return &v;
+    return nullptr;
+  };
+  std::string aTok = "1080p5994", bTok = "720p5994";
+  if(opt.onlyModes.size() >= 2)
+  {
+    aTok = opt.onlyModes[0];
+    bTok = opt.onlyModes[1];
+  }
+  const VMode* A = findMode(aTok);
+  const VMode* B = findMode(bTok);
+  if(!A || !B)
+  {
+    std::printf(
+        "live-switch: modes '%s' / '%s' not both supported on this device\n",
+        aTok.c_str(), bTok.c_str());
+    return 2;
+  }
+  std::printf(
+      "live-switch: A=%s (%dx%d)  B=%s (%dx%d)  pf=%s\n", A->name.c_str(), A->w,
+      A->h, B->name.c_str(), B->w, B->h, pf.name.c_str());
+
+  DeckLinkInputSettings inS;
+  inS.deviceIndex = opt.device;
+  inS.pixelFormat = pf.fmt;
+  inS.connection = bmdVideoConnectionSDI;
+  inS.autoDetect = true; // follow the wire live
+  const int sinkW = std::max(A->w, B->w), sinkH = std::max(A->h, B->h);
+
+  GpuReceiver rcv;
+  if(!rcv.open(inS, sinkW, sinkH, opt.api))
+  {
+    std::printf("live-switch: receiver open failed\n");
+    return 2;
+  }
+
+  auto phase = [&](const VMode& vm, double secs) -> int {
+    DeckLinkOutputSettings outS;
+    outS.deviceIndex = opt.device;
+    outS.displayMode = vm.mode;
+    outS.pixelFormat = pf.fmt;
+    auto* src = new score::gfx::TexgenNode;
+    src->function = &g_paint;
+    auto* out = new DeckLinkNode(outS);
+    auto g = std::make_unique<score::gfx::Graph>();
+    g->addNode(src);
+    g->addNode(out);
+    g->addEdge(
+        src->output[0], out->input[0], Process::CableType::ImmediateGlutton);
+    g->createAllRenderLists(opt.api);
+    const int before = rcv.m.frames.load();
+    if(out->canRender())
+    {
+      QTimer render;
+      render.setTimerType(Qt::PreciseTimer);
+      QObject::connect(&render, &QTimer::timeout, [&] {
+        out->render();
+        rcv.renderTick();
+      });
+      render.start(int(1000.0 / std::max(1.0, vm.rate)));
+      QEventLoop loop;
+      QTimer stopper;
+      stopper.setSingleShot(true);
+      QObject::connect(&stopper, &QTimer::timeout, &loop, [&] { loop.quit(); });
+      stopper.start(qint64(secs * 1000));
+      loop.exec();
+      render.stop();
+    }
+    const int delivered = rcv.m.frames.load() - before;
+    g.reset();
+    delete out;
+    delete src;
+    return delivered;
+  };
+
+  const int deliveredA = phase(*A, opt.seconds);
+  std::printf(
+      "live-switch: phase A (%s) delivered %d frames, lastIdx=%d\n",
+      A->name.c_str(), deliveredA, rcv.m.lastIdx);
+  const int deliveredB = phase(*B, opt.seconds);
+  std::printf(
+      "live-switch: phase B (%s) delivered %d frames, lastIdx=%d\n",
+      B->name.c_str(), deliveredB, rcv.m.lastIdx);
+  rcv.stop();
+
+  const bool ok = deliveredA > 0 && deliveredB > 0;
+  std::printf(
+      "live-switch: %s  (A=%d B=%d frames delivered across the switch)\n",
+      ok ? "PASS" : "FAIL", deliveredA, deliveredB);
+  return ok ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -619,7 +719,12 @@ int main(int argc, char** argv)
   QCommandLineOption list("list", "Print supported matrix and exit");
   QCommandLineOption apiOpt(
       "api", "Render backend: opengl | vulkan", "api", "opengl");
-  p.addOptions({secs, dev, modes, pfs, conns, dump, list, apiOpt});
+  QCommandLineOption liveSwitch(
+      "live-switch",
+      "Live input-resolution test: drive the output from mode A to mode B "
+      "mid-stream with an Auto-detect capture; --modes A,B picks the pair "
+      "(default 1080p5994,720p5994), --pixfmt picks the format.");
+  p.addOptions({secs, dev, modes, pfs, conns, dump, list, apiOpt, liveSwitch});
   p.addHelpOption();
   p.process(*qApp);
 
@@ -662,6 +767,19 @@ int main(int argc, char** argv)
       {bmdFormat8BitBGRA, "BGRA8", 35.0},
       {bmdFormat10BitRGB, "RGB10", 35.0},
   };
+
+  if(p.isSet(liveSwitch))
+  {
+    const PFmt* pf = &pixfmts[0]; // YCbCr8 default; --pixfmt overrides
+    if(!opt.onlyPixfmts.empty())
+      for(const auto& c : pixfmts)
+        if(wanted(opt.onlyPixfmts, c.name))
+        {
+          pf = &c;
+          break;
+        }
+    return runLiveSwitch(opt, vmodes, *pf);
+  }
   const std::vector<Conn> connectors = {
       {bmdVideoConnectionSDI, "sdi"},
       {bmdVideoConnectionHDMI, "hdmi"},

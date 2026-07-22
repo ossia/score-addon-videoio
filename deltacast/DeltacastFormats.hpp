@@ -15,6 +15,7 @@ namespace Gfx::Deltacast
 /// fractional rate); defaults to 1080p60 for unknown tokens.
 inline VHD_VIDEOSTANDARD vhdStandardFromToken(const QString& f) noexcept
 {
+  if(f == "Auto")      return static_cast<VHD_VIDEOSTANDARD>(0); // open() detects
   if(f == "1080p2398" || f == "1080p24") return VHD_VIDEOSTD_S274M_1080p_24Hz;
   if(f == "1080p25")                     return VHD_VIDEOSTD_S274M_1080p_25Hz;
   if(f == "1080p2997" || f == "1080p30") return VHD_VIDEOSTD_S274M_1080p_30Hz;

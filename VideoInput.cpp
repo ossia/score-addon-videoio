@@ -90,6 +90,7 @@ Gfx::DeckLink::DeckLinkInputSettings toDeckLinkInput(const VideoInputSettings& s
 {
   Gfx::DeckLink::DeckLinkInputSettings d;
   d.deviceIndex = s.deviceIndex;
+  d.autoDetect = (s.videoFormat == "Auto");
   d.displayMode = Gfx::DeckLink::bmdModeFromToken(s.videoFormat);
   d.pixelFormat = Gfx::DeckLink::bmdPixelFromToken(s.pixelFormat);
   return d;
@@ -564,6 +565,11 @@ void VideoInputSettingsWidget::updateFormatList()
   for(const auto& e :
       caps::filterVideoFormats(currentVendor(), devIdx, /*forOutput=*/false, master))
     m_formatCombo->addItem(e.second);
+
+  // Follow the wire: open at whatever resolution the input currently carries and
+  // adopt live changes. DeckLink reads it from IDeckLinkStatus; AJA/Magewell/
+  // Deltacast already auto-detect their incoming signal.
+  m_formatCombo->insertItem(0, QStringLiteral("Auto"));
 
   const QString def = "1080p5994";
   int idx = m_formatCombo->findText(prev.isEmpty() ? def : prev);

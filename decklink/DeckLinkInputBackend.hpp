@@ -24,6 +24,10 @@ struct DeckLinkInputSettings
   /// the card's currently-configured connection. Cards with multiple inputs
   /// (e.g. DeckLink Studio 4K) need this to pick SDI vs HDMI capture.
   BMDVideoConnection connection{BMDVideoConnection(0)};
+  /// Auto mode: open at whatever geometry the wire currently carries (read from
+  /// IDeckLinkStatus) rather than displayMode, and follow live resolution
+  /// changes by publishing them to the ring for the render thread to adopt.
+  bool autoDetect{false};
 };
 
 /**
