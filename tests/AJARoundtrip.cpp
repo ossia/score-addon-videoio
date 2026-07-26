@@ -1809,6 +1809,17 @@ Options parseOptions()
 
 } // namespace
 
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define SCORE_TEST_HAS_LSAN 1
+#endif
+#elif defined(__SANITIZE_ADDRESS__)
+#define SCORE_TEST_HAS_LSAN 1
+#endif
+#if defined(SCORE_TEST_HAS_LSAN)
+#include <sanitizer/lsan_interface.h>
+#endif
+
 int main(int argc, char** argv)
 {
   QLocale::setDefault(QLocale::C);
@@ -1855,6 +1866,11 @@ int main(int argc, char** argv)
         // Cards are closed by now. score's global teardown still segfaults
         // even with audio plugins disabled, which would mask the pass/fail
         // exit code — so exit cleanly with the real result code.
+        #if defined(SCORE_TEST_HAS_LSAN)
+        // _Exit skips LSan's atexit hook; run the leak check explicitly so
+        // sanitizer builds still report leaks (dies non-zero on findings).
+        __lsan_do_leak_check();
+#endif
         std::_Exit(rc);
       },
       Qt::QueuedConnection);
