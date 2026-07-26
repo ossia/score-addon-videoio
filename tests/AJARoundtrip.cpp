@@ -480,6 +480,9 @@ struct Result
   /// invalidated by measuring a path other than the one requested.
   std::string rxStrategy = "-";
   bool rxPinUnmet = false;
+  /// Same accounting for the OUTPUT rung (SCORE_GFX_DIRECT_READBACK pin).
+  bool txPinUnmet = false;
+  bool txPinUnavailable = false;
   double renderMeanMs = 0, renderP95Ms = 0, renderMaxMs = 0; // producer cost
   uint64_t txGood = 0, txDrops = 0, txUnderruns = 0;
 };
@@ -1101,6 +1104,8 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
   r.txDrops = out->pacingDrops();
   r.txUnderruns = out->pacingUnderruns();
   r.sent = int(r.txGood);
+  r.txPinUnmet = out->outputStrategyPinUnmet();
+  r.txPinUnavailable = out->outputStrategyPinUnavailable();
 
   if(r.status.empty() && txOnly)
   {
@@ -1152,13 +1157,13 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
   // Checked last so it overrides even PASS: if the requested rung did not
   // engage, the cell measured something other than what was asked for and its
   // numbers must not be read as a result for that rung.
-  if(r.rxPinUnmet)
+  if(r.rxPinUnmet || r.txPinUnmet)
     r.status = "FAIL(rung-not-engaged)";
   // Pinning a rung that cannot exist on this backend (e.g. hostimport under
   // OpenGL) correctly leaves no strategy at all. That is not a quality
   // regression, so do not label it FAIL(psnr) — the black frames are the
   // absence of a capture path, which is the honest answer to the request.
-  else if(gpuRx && r.rxStrategy == "-")
+  else if((gpuRx && r.rxStrategy == "-") || r.txPinUnavailable)
     r.status = "SKIP(rung-unavailable)";
 
   // Teardown: graph dtor releases render lists (which reference the nodes)
