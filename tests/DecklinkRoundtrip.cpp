@@ -749,10 +749,12 @@ Result runCell(
     // sends the reader hunting for a colour-conversion bug instead. Repeats
     // are only counted after warmup, so compare against the post-warmup frame
     // count: against the raw total, a long-warmup (UHD) cell could freeze
-    // completely and still slip past this guard as a PSNR-99 PASS.
+    // completely and still slip past this guard as a PSNR-99 PASS. Only the
+    // CPU pattern carries a frame index; a static GPU pattern repeats by
+    // construction and lands in PERF-ONLY(no-index) below instead.
     else if(
         const int postWarm = M.postWarmFrames.load();
-        postWarm > 2 && r.repeats >= postWarm - 2)
+        usedCpuPattern && postWarm > 2 && r.repeats >= postWarm - 2)
       r.status = "FAIL(no-capture)";
     else if(r.minPsnr < pf.psnrThreshold)
       r.status = (rgbRequested && r.minPsnr >= 15.0) ? "SKIP(rgb-wire-degraded)"
