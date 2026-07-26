@@ -85,6 +85,11 @@ void paint(uint8_t* rgba, int w, int h, int idx)
 }
 
 std::array<std::atomic<int64_t>, kIdxMod> g_sendNs{};
+/// CPU cost of generating the test pattern. Split out of `send` because the
+/// rest of that phase (encode + readback + memcpy to the card) is product path
+/// while this is pure scaffolding — optimising the wrong half would be easy.
+std::atomic<double> g_paintMs{0};
+std::atomic<int> g_paintCalls{0};
 inline int64_t nowNs()
 {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -96,7 +101,10 @@ void g_paint(unsigned char* rgb, int width, int height, int t)
 {
   const int idx = t % kIdxMod;
   g_sendNs[idx].store(nowNs(), std::memory_order_relaxed);
+  const auto t0 = nowNs();
   paint(rgb, width, height, idx);
+  g_paintMs.store(g_paintMs.load() + (nowNs() - t0) / 1e6);
+  g_paintCalls.fetch_add(1);
 }
 
 double psnrGradient(const uint8_t* recv, const uint8_t* ref, int w, int h)
@@ -269,12 +277,18 @@ struct PhaseProfile
   double psnrMs = 0;     // reference paint + PSNR compare (verification)
   int ticks = 0;
   int psnrCalls = 0;
+  double paintMs = 0;
+  int paintCalls = 0;
 
   void report(double fps, double target) const
   {
     if(ticks == 0)
       return;
     const double tick = 1000.0 / (fps > 0 ? fps : 1);
+    std::printf(
+        "  of which CPU pattern paint: %6.2f ms/frame over %d calls (harness "
+        "scaffolding: a shader would remove this AND its 33 MB upload)\n",
+        paintCalls ? paintMs / ticks : 0.0, paintCalls);
     std::printf(
         "  phases/frame: send %6.2f ms | rx-render %6.2f ms | idx %5.2f ms | "
         "psnr %5.2f ms (amortised over %d calls) | total %6.2f of %6.2f ms "
@@ -610,6 +624,10 @@ Result runCell(
     stopper.start(qint64(opt.seconds * 1000));
     loop.exec();
     render.stop();
+    prof.paintMs = g_paintMs.load();
+    prof.paintCalls = g_paintCalls.load();
+    g_paintMs.store(0);
+    g_paintCalls.store(0);
     r.profile = prof;
   }
 
