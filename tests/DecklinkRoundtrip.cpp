@@ -687,7 +687,12 @@ Result runCell(
       render.stop();
       loop.quit();
     });
-    stopper.start(qint64(opt.seconds * 1000));
+    // The warmup window is excluded from every metric, so it must not eat
+    // into the accounted window either: a 3 s UHD retrain inside a 4 s cell
+    // left ~1 s of samples, and cells legitimately locking were reported
+    // SKIP(no-lock) purely for lack of PSNR samples.
+    const double warmupSecs = opt.txOnly ? 0.0 : rcv.m.warmupNs / 1e9;
+    stopper.start(qint64((opt.seconds + warmupSecs) * 1000));
     loop.exec();
     render.stop();
     prof.paintMs = g_paintMs.load();
@@ -708,7 +713,10 @@ Result runCell(
   r.recv = M.frames.load();
   r.gaps = M.gaps.load();
   r.repeats = M.repeats.load();
-  r.fps = r.recv / opt.seconds;
+  // Rate over the accounted (post-warmup) window; the raw total spans the
+  // warmup too and understates every long-warmup cell.
+  r.fps = (opt.txOnly ? int(out->pacingGoodXfers()) : M.postWarmFrames.load())
+          / opt.seconds;
   r.targetFps = vm.rate;
   const Summary lat = M.latency.summarize();
   const Summary itv = M.interval.summarize();
