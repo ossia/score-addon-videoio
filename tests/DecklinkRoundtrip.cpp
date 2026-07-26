@@ -486,6 +486,7 @@ struct Options
   QString isfPath;
   bool cpuPattern = false;
   bool list = false;
+  bool txOnly = false;
 };
 
 // Enumerate the device's display modes through the input interface (loopback
@@ -589,7 +590,7 @@ Result runCell(
       dout->DoesSupportVideoMode(
           cn.conn, vm.mode, pf.fmt, bmdNoVideoOutputConversion,
           bmdSupportedVideoModeDefault, &actual, &outOk);
-      if(!inOk || !outOk)
+      if(!outOk || (!inOk && !opt.txOnly))
       {
         r.status = !outOk ? "SKIP(hw-out)" : "SKIP(hw-in)";
         return r;
@@ -600,8 +601,9 @@ Result runCell(
     // HDMI, but the HDMI encoder emits no TMDS at all for RGB framebuffers —
     // any mode, with or without the 4:4:4 flag (pure-SDK loopback verified;
     // the SDI mirror of the same output carries converted content). The claim
-    // lies, so gate it here.
-    if(cn.conn == bmdVideoConnectionHDMI
+    // lies, so gate it here. tx-only cells never verify the wire, so the
+    // send path still gets exercised there.
+    if(!opt.txOnly && cn.conn == bmdVideoConnectionHDMI
        && (pf.fmt == bmdFormat8BitBGRA || pf.fmt == bmdFormat10BitRGB))
     {
       r.status = "SKIP(hw-out-hdmi-rgb)";
@@ -643,7 +645,14 @@ Result runCell(
 
   GpuReceiver rcv;
   const int estFrames = int(vm.rate * opt.seconds) + 64;
-  if(!rcv.open(inS, vm.w, vm.h, opt.api))
+  if(opt.txOnly)
+  {
+    // Send path only: encoder + output rung + card scheduling run for real,
+    // nothing is captured back. This is the only way to execute the RGB
+    // encoders on hardware whose loopback cannot lock them (HDMI emits no
+    // TMDS for RGB, and a dead SDI loop denies EnableVideoInput).
+  }
+  else if(!rcv.open(inS, vm.w, vm.h, opt.api))
     r.status = "SKIP(in-open)";
   else
   {
@@ -720,7 +729,9 @@ Result runCell(
 
   if(r.status.empty())
   {
-    if(M.psnrCount.load() == 0)
+    if(opt.txOnly)
+      r.status = r.sent > 0 ? "PERF-ONLY(tx-only)" : "FAIL(no-tx)";
+    else if(M.psnrCount.load() == 0)
       r.status = "SKIP(no-lock)";
     // A capture that never advances its frame index delivered nothing at all
     // (dead connector, unplugged loopback, wedged DMA). Saying "psnr" there
@@ -746,7 +757,7 @@ Result runCell(
   if(r.rxPinUnmet || r.txPinUnmet)
     r.status = "FAIL(rung-not-engaged)";
   else if(
-      (r.rxStrategy == "-" || r.txPinUnavailable)
+      ((!opt.txOnly && r.rxStrategy == "-") || r.txPinUnavailable)
       && r.status.rfind("SKIP", 0) != 0)
     r.status = "SKIP(rung-unavailable)";
 
@@ -914,6 +925,11 @@ int main(int argc, char** argv)
       "path");
   QCommandLineOption cpuPat(
       "cpu-pattern", "Force the old CPU pattern source (for comparison)");
+  QCommandLineOption txOnly(
+      "tx-only",
+      "Run the send path only (encoder + output rung + card scheduling), "
+      "without opening capture. Exercises formats whose loopback cannot lock "
+      "(RGB over HDMI, dead SDI loop); reports throughput, never correctness.");
   QCommandLineOption apiOpt(
       "api", "Render backend: opengl | vulkan | d3d11 | d3d12", "api", "opengl");
   QCommandLineOption liveSwitch(
@@ -922,7 +938,8 @@ int main(int argc, char** argv)
       "mid-stream with an Auto-detect capture; --modes A,B picks the pair "
       "(default 1080p5994,720p5994), --pixfmt picks the format.");
   p.addOptions(
-      {secs, dev, modes, pfs, conns, dump, list, apiOpt, liveSwitch, isf, cpuPat});
+      {secs, dev, modes, pfs, conns, dump, list, apiOpt, liveSwitch, isf, cpuPat,
+       txOnly});
   p.addHelpOption();
   p.process(*qApp);
 
@@ -949,6 +966,7 @@ int main(int argc, char** argv)
   opt.dumpPrefix = p.value(dump).toStdString();
   opt.isfPath = p.value(isf);
   opt.cpuPattern = p.isSet(cpuPat);
+  opt.txOnly = p.isSet(txOnly);
   for(const auto& s : p.value(modes).split(',', Qt::SkipEmptyParts))
     opt.onlyModes.push_back(s.toStdString());
   for(const auto& s : p.value(pfs).split(',', Qt::SkipEmptyParts))
