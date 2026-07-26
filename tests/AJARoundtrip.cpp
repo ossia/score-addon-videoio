@@ -474,6 +474,12 @@ struct Result
   // Performance detail.
   double latP95Ms = 0, latMaxMs = 0;       // latency distribution
   double jitterMs = 0, maxIntervalMs = 0;  // receiver pacing (inter-arrival)
+  /// Which capture rung engaged (RDMA / DVP / CPU-hostimport / CPU-QRhi), and
+  /// whether SCORE_GFX_CAPTURE_STRATEGY asked for one that did not. A row
+  /// without this cannot be trusted: four rounds of results in one session were
+  /// invalidated by measuring a path other than the one requested.
+  std::string rxStrategy = "-";
+  bool rxPinUnmet = false;
   double renderMeanMs = 0, renderP95Ms = 0, renderMaxMs = 0; // producer cost
   uint64_t txGood = 0, txDrops = 0, txUnderruns = 0;
 };
@@ -818,8 +824,19 @@ struct GpuReceiver
       m.recordPsnr(px, w, h, idx);
   }
 
+  /// Snapshotted in stop(): the node is deleted there, and reading it
+  /// afterwards silently yielded the AVFrame-receiver label instead.
+  std::string engagedRx = "-";
+  bool pinUnmet = false;
+
   void stop()
   {
+    if(in)
+    {
+      if(const char* n = in->engagedCaptureStrategy())
+        engagedRx = n;
+      pinUnmet = in->captureStrategyPinUnmet();
+    }
     graph.reset();
     delete bg;
     bg = nullptr;
@@ -1119,6 +1136,31 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
       r.status = "PASS";
   }
 
+  // Read after the run: the receiver graph does not exist yet where the output
+  // strategy is recorded, and querying it there silently yielded "avframe-rx"
+  // for GPU-receiver runs.
+  if(gpuRx)
+  {
+    r.rxStrategy = gpuRcv.engagedRx;
+    r.rxPinUnmet = gpuRcv.pinUnmet;
+  }
+  else if(!txOnly)
+  {
+    r.rxStrategy = "avframe-rx";
+  }
+
+  // Checked last so it overrides even PASS: if the requested rung did not
+  // engage, the cell measured something other than what was asked for and its
+  // numbers must not be read as a result for that rung.
+  if(r.rxPinUnmet)
+    r.status = "FAIL(rung-not-engaged)";
+  // Pinning a rung that cannot exist on this backend (e.g. hostimport under
+  // OpenGL) correctly leaves no strategy at all. That is not a quality
+  // regression, so do not label it FAIL(psnr) — the black frames are the
+  // absence of a capture path, which is the honest answer to the request.
+  else if(gpuRx && r.rxStrategy == "-")
+    r.status = "SKIP(rung-unavailable)";
+
   // Teardown: graph dtor releases render lists (which reference the nodes)
   // before we delete the nodes.
   graph.reset();
@@ -1129,16 +1171,22 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
 
 void printMatrix(const std::vector<Result>& rows)
 {
-  std::printf("\n%-12s %-8s %-5s %-13s %6s %6s %6s %5s %5s %5s %8s %8s %-14s\n",
-              "format", "pixfmt", "iop", "strategy", "sent", "recv", "fps",
-              "txdrp", "lost", "rep", "lat(ms)", "minPSNR", "status");
-  std::printf("%s\n", std::string(120, '-').c_str());
+  // tx-strategy is the OUTPUT rung, rx-strategy the CAPTURE rung. They are
+  // separate ladders and conflating them is how a whole round of results can
+  // describe a path that never ran.
+  std::printf(
+      "\n%-12s %-8s %-5s %-13s %-15s %6s %6s %6s %5s %5s %5s %8s %8s %-22s\n",
+      "format", "pixfmt", "iop", "tx-strategy", "rx-strategy", "sent", "recv",
+      "fps", "txdrp", "lost", "rep", "lat(ms)", "minPSNR", "status");
+  std::printf("%s\n", std::string(140, '-').c_str());
   for(const auto& r : rows)
     std::printf(
-        "%-12s %-8s %-5s %-13s %6d %6d %6.1f %5llu %5d %5d %8.2f %8.2f %-14s\n",
+        "%-12s %-8s %-5s %-13s %-15s %6d %6d %6.1f %5llu %5d %5d %8.2f %8.2f "
+        "%-22s\n",
         r.videoFormat.c_str(), r.pixelFormat.c_str(), r.interop.c_str(),
-        r.strategy.c_str(), r.sent, r.recv, r.fps, (unsigned long long)r.txDrops,
-        r.gaps, r.repeats, r.meanLatencyMs, r.minPsnr, r.status.c_str());
+        r.strategy.c_str(), r.rxStrategy.c_str(), r.sent, r.recv, r.fps,
+        (unsigned long long)r.txDrops, r.gaps, r.repeats, r.meanLatencyMs,
+        r.minPsnr, r.status.c_str());
 }
 
 // Performance detail: producer render() cost, end-to-end latency distribution,
