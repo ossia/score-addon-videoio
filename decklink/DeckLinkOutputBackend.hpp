@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <mutex>
 #include <semaphore>
+#include <utility>
 #include <vector>
 
 namespace Gfx::DeckLink
@@ -104,12 +105,12 @@ private:
 
   ComPtr<IDeckLink> m_device;
   ComPtr<IDeckLinkOutput> m_output;
-  /// Page-aligned pooled frame memory; see the .cpp. Null = SDK's allocator.
-  ComPtr<IDeckLinkMemoryAllocator_v14_2_1> m_allocator;
-  /// Allocation lookup on our allocator (base + size containing a frame
-  /// pointer), for the direct-readback region contract. Empty when the SDK's
-  /// own allocator is in use - direct readback then stays off.
-  std::function<bool(const void*, void*&, std::size_t&)> m_regionLookup;
+  /// Our page-aligned frame storage behind the pool frames
+  /// (CreateVideoFrameWithBuffer) and each buffer's {base, size}, the
+  /// direct-readback region contract. Empty when the SDK allocates the frames
+  /// (SCORE_DECKLINK_SDK_ALLOCATOR) - direct readback then stays off.
+  std::vector<ComPtr<IDeckLinkVideoBuffer>> m_frameBuffers;
+  std::vector<std::pair<void*, std::size_t>> m_frameRegions;
   /// Config settings revert when the IDeckLinkConfiguration object is
   /// released — keep it alive for the stream's lifetime (444 wire flag).
   ComPtr<IDeckLinkConfiguration> m_cfg;

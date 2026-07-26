@@ -13,7 +13,6 @@ extern "C" {
 
 #include <algorithm>
 #include <atomic>
-#include <map>
 #include <mutex>
 #include <chrono>
 #include <cstring>
@@ -22,35 +21,55 @@ namespace Gfx::DeckLink
 {
 namespace
 {
-/// Page-aligned, pooled frame memory for the card.
+/// App-owned, page-aligned frame storage for the pool, handed to
+/// IDeckLinkOutput::CreateVideoFrameWithBuffer (SDK 12.9+).
 ///
-/// By default the SDK allocates output frames itself with no alignment
-/// guarantee, and every frame is memcpy'd into that buffer. Owning the memory
-/// gives two things: aligned, reused pages (so the copy does not fault in fresh
-/// ones each frame), and — the real reason — a host pointer we are allowed to
-/// import as GPU-visible memory, which is what lets the readback land in the
-/// card's frame directly instead of being copied into it.
-// SDK 16 keeps the OUTPUT frame allocator only on the versioned _v14_2_1
-// interface (the modern IDeckLinkVideoBufferAllocatorProvider is input-only),
-// so the legacy interface is the supported way to own output frame memory.
-class AlignedFrameAllocator final : public IDeckLinkMemoryAllocator_v14_2_1
+/// By default CreateVideoFrame allocates frame memory inside the SDK with no
+/// alignment guarantee and hands out GetBytes() pointers at an offset inside
+/// its own buffers. Owning the buffer gives frame bytes at offset 0 of an
+/// allocation the GPU can wrap: a VirtualAlloc region on Windows (the only
+/// thing D3D12's OpenExistingHeapFromAddress accepts, sized in whole 64 KiB
+/// so it covers the placed buffer's 64 KiB-aligned allocation size) and a
+/// 4096-aligned allocation elsewhere (VK_EXT_external_memory_host /
+/// GL_AMD_pinned_memory page requirement).
+class HostFrameBuffer final : public IDeckLinkVideoBuffer
 {
 public:
-  static constexpr std::size_t kAlign = 4096; // >= minImportedHostPointerAlignment
 #if defined(_WIN32)
-  // D3D12's OpenExistingHeapFromAddress only accepts VirtualAlloc regions and
-  // derives the heap size from the region, which must cover the placed
-  // buffer's 64 KiB-aligned allocation size.
-  static constexpr std::size_t kWinRound = 65536;
+  static constexpr std::size_t kRound = 65536;
+#else
+  static constexpr std::size_t kRound = 4096;
 #endif
+
+  explicit HostFrameBuffer(std::size_t bytes)
+      : m_size{(bytes + kRound - 1) / kRound * kRound}
+  {
+#if defined(_WIN32)
+    m_data = VirtualAlloc(nullptr, m_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#else
+    m_data = std::aligned_alloc(kRound, m_size);
+#endif
+  }
+  ~HostFrameBuffer()
+  {
+#if defined(_WIN32)
+    if(m_data)
+      VirtualFree(m_data, 0, MEM_RELEASE);
+#else
+    std::free(m_data);
+#endif
+  }
+
+  void* data() const noexcept { return m_data; }
+  std::size_t size() const noexcept { return m_size; }
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** ppv) override
   {
     if(!ppv)
       return E_POINTER;
-    if(IsEqualIID(iid, IID_IDeckLinkMemoryAllocator_v14_2_1))
+    if(IsEqualIID(iid, IID_IUnknown) || IsEqualIID(iid, IID_IDeckLinkVideoBuffer))
     {
-      *ppv = static_cast<IDeckLinkMemoryAllocator_v14_2_1*>(this);
+      *ppv = static_cast<IDeckLinkVideoBuffer*>(this);
       AddRef();
       return S_OK;
     }
@@ -66,89 +85,28 @@ public:
     return r;
   }
 
-  HRESULT STDMETHODCALLTYPE
-  AllocateBuffer(unsigned int bufferSize, void** allocatedBuffer) override
-  {
-    if(!allocatedBuffer)
-      return E_POINTER;
-    std::lock_guard lock{m_mutex};
-    // Reuse a retired buffer of the same size before asking the OS again.
-    if(auto it = m_free.find(bufferSize); it != m_free.end() && !it->second.empty())
-    {
-      *allocatedBuffer = it->second.back();
-      it->second.pop_back();
-      return S_OK;
-    }
-#if defined(_WIN32)
-    const std::size_t rounded = ((bufferSize + kWinRound - 1) / kWinRound) * kWinRound;
-    void* p = VirtualAlloc(nullptr, rounded, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-#else
-    const std::size_t rounded = ((bufferSize + kAlign - 1) / kAlign) * kAlign;
-    void* p = std::aligned_alloc(kAlign, rounded);
-#endif
-    if(!p)
-      return E_OUTOFMEMORY;
-    m_sizes[p] = {bufferSize, rounded};
-    *allocatedBuffer = p;
-    return S_OK;
-  }
-
-  HRESULT STDMETHODCALLTYPE ReleaseBuffer(void* buffer) override
+  HRESULT STDMETHODCALLTYPE GetBytes(void** buffer) override
   {
     if(!buffer)
-      return S_OK;
-    std::lock_guard lock{m_mutex};
-    if(auto it = m_sizes.find(buffer); it != m_sizes.end())
-      m_free[it->second.requested].push_back(buffer);
+      return E_POINTER;
+    *buffer = m_data;
+    return m_data ? S_OK : E_OUTOFMEMORY;
+  }
+  // Plain host memory is always accessible; access bracketing has nothing to
+  // map or flush.
+  HRESULT STDMETHODCALLTYPE StartAccess(BMDBufferAccessFlags) override
+  {
     return S_OK;
   }
-
-  /// The allocation containing `p`. The SDK's video buffers hand out frame
-  /// pointers at an offset inside the buffer we allocated, and the GPU
-  /// readback needs the whole region to wrap it as a heap/import.
-  bool regionFor(const void* p, void*& base, std::size_t& bytes)
+  HRESULT STDMETHODCALLTYPE EndAccess(BMDBufferAccessFlags) override
   {
-    std::lock_guard lock{m_mutex};
-    auto it = m_sizes.upper_bound(const_cast<void*>(p));
-    if(it == m_sizes.begin())
-      return false;
-    --it;
-    const auto* b = static_cast<const char*>(it->first);
-    if(static_cast<const char*>(p) >= b + it->second.rounded)
-      return false;
-    base = it->first;
-    bytes = it->second.rounded;
-    return true;
-  }
-
-  HRESULT STDMETHODCALLTYPE Commit() override { return S_OK; }
-  HRESULT STDMETHODCALLTYPE Decommit() override
-  {
-    std::lock_guard lock{m_mutex};
-    for(auto& [sz, bufs] : m_free)
-      for(void* p : bufs)
-      {
-#if defined(_WIN32)
-        VirtualFree(p, 0, MEM_RELEASE);
-#else
-        std::free(p);
-#endif
-        m_sizes.erase(p);
-      }
-    m_free.clear();
     return S_OK;
   }
 
 private:
-  struct Sizes
-  {
-    unsigned int requested{};
-    std::size_t rounded{};
-  };
   std::atomic<ULONG> m_ref{1};
-  std::mutex m_mutex;
-  std::map<void*, Sizes> m_sizes;
-  std::map<unsigned int, std::vector<void*>> m_free;
+  void* m_data{};
+  std::size_t m_size{};
 };
 } // namespace
 
@@ -319,38 +277,6 @@ bool DeckLinkOutputBackend::open(score::gfx::GraphicsApi)
     }
   }
 
-  // Must be installed before the frames are created, or the SDK's own
-  // allocator has already handed out unaligned memory.
-  if(!qEnvironmentVariableIsSet("SCORE_DECKLINK_SDK_ALLOCATOR"))
-  {
-    ComPtr<IDeckLinkOutput_v14_2_1> legacyOut;
-    if(m_output->QueryInterface(IID_IDeckLinkOutput_v14_2_1, legacyOut.putVoid())
-           == S_OK
-       && legacyOut)
-    {
-      auto* alloc = new AlignedFrameAllocator;
-      m_allocator = ComPtr<IDeckLinkMemoryAllocator_v14_2_1>(alloc);
-      if(legacyOut->SetVideoOutputFrameMemoryAllocator(m_allocator.get()) != S_OK)
-      {
-        qWarning() << "DeckLink: custom frame allocator refused; using the SDK's";
-        m_allocator.reset();
-      }
-      else
-      {
-        // The lambda captures the raw allocator; cleared in close() before
-        // m_allocator drops its reference.
-        m_regionLookup = [alloc](const void* p, void*& base, std::size_t& bytes) {
-          return alloc->regionFor(p, base, bytes);
-        };
-      }
-    }
-    else
-    {
-      qWarning() << "DeckLink: no IDeckLinkOutput_v14_2_1 - output frames use "
-                    "the SDK's own (unaligned) allocator";
-    }
-  }
-
   if(m_output->EnableVideoOutput(m_settings.displayMode, bmdVideoOutputFlagDefault)
      != S_OK)
   {
@@ -367,22 +293,51 @@ bool DeckLinkOutputBackend::open(score::gfx::GraphicsApi)
     return false;
   }
 
-  // Completion-tracked frame pool: the driver only ever sees these SDK-
-  // allocated frames, never CpuStagedVideoOutput's ring memory, so a frame's
-  // bytes stay immutable from ScheduleVideoFrame until its completion (the
+  // Completion-tracked frame pool: the driver only ever sees these pool
+  // frames, never CpuStagedVideoOutput's ring memory, so a frame's bytes stay
+  // immutable from ScheduleVideoFrame until its completion (the
   // SignalGenerator sample's invariant). One pacing permit per pool frame.
+  //
+  // The frames wrap our own page-aligned HostFrameBuffers
+  // (CreateVideoFrameWithBuffer) so the GPU can write them directly;
+  // SCORE_DECKLINK_SDK_ALLOCATOR falls back to SDK-allocated frames (and
+  // thereby disables the direct-readback path).
   {
+    const bool ownMemory
+        = !qEnvironmentVariableIsSet("SCORE_DECKLINK_SDK_ALLOCATOR");
     std::lock_guard lock{m_poolMutex};
     m_pool.reserve(kPoolSize);
     m_free.reserve(kPoolSize);
     for(int i = 0; i < kPoolSize; ++i)
     {
       ComPtr<IDeckLinkMutableVideoFrame> frame;
-      if(m_output->CreateVideoFrame(
-             m_width, m_height, m_rowBytes, m_settings.pixelFormat,
-             bmdFrameFlagDefault, frame.put())
-             != S_OK
-         || !frame)
+      if(ownMemory)
+      {
+        auto* raw = new HostFrameBuffer(std::size_t(m_frameByteSize));
+        ComPtr<IDeckLinkVideoBuffer> buf{raw}; // adopt the initial ref
+        if(raw->data()
+           && m_output->CreateVideoFrameWithBuffer(
+                  m_width, m_height, m_rowBytes, m_settings.pixelFormat,
+                  bmdFrameFlagDefault, buf.get(), frame.put())
+                  == S_OK
+           && frame)
+        {
+          m_frameRegions.push_back({raw->data(), raw->size()});
+          m_frameBuffers.push_back(std::move(buf));
+        }
+        else
+        {
+          qWarning() << "DeckLink: CreateVideoFrameWithBuffer failed at pool"
+                     << i << "- falling back to SDK frame memory";
+          frame.reset();
+        }
+      }
+      if(!frame
+         && (m_output->CreateVideoFrame(
+                 m_width, m_height, m_rowBytes, m_settings.pixelFormat,
+                 bmdFrameFlagDefault, frame.put())
+                 != S_OK
+             || !frame))
       {
         qWarning() << "DeckLink: CreateVideoFrame failed at pool slot" << i;
         m_pool.clear();
@@ -448,14 +403,15 @@ void DeckLinkOutputBackend::close()
     m_free.clear();
     m_pool.clear(); // releases our refs; the driver's are gone after quiesce()
   }
+  // After the frames: each frame holds a reference to its buffer.
+  m_frameRegions.clear();
+  m_frameBuffers.clear();
   drainPermits();
   m_directPacing.store(false, std::memory_order_relaxed);
   m_frameCount = 0;
   m_started = false;
   m_quiesced = false;
   m_callback.reset();
-  m_regionLookup = {};
-  m_allocator.reset();
   m_output.reset();
   m_device.reset();
   m_open = false;
@@ -536,7 +492,7 @@ score::gfx::interop::FrameMemoryProvider DeckLinkOutputBackend::frameMemoryProvi
 
 score::gfx::interop::VendorFrameMemory DeckLinkOutputBackend::acquireFrameMemory()
 {
-  if(!m_output || !m_regionLookup)
+  if(!m_output || m_frameRegions.empty())
     return {};
   // The permit is this frame's back-pressure: none free => the caller drops
   // the render tick, exactly as waitForTick would have.
@@ -569,12 +525,24 @@ score::gfx::interop::VendorFrameMemory DeckLinkOutputBackend::acquireFrameMemory
   }
   void* bytes = nullptr;
   score::gfx::interop::VendorFrameMemory mem;
-  if(buf->GetBytes(&bytes) != S_OK || !bytes
-     || !m_regionLookup(bytes, mem.regionBase, mem.regionBytes))
+  if(buf->GetBytes(&bytes) == S_OK && bytes)
+  {
+    for(const auto& [base, size] : m_frameRegions)
+    {
+      if(bytes >= base
+         && static_cast<char*>(bytes) < static_cast<char*>(base) + size)
+      {
+        mem.regionBase = base;
+        mem.regionBytes = size;
+        break;
+      }
+    }
+  }
+  if(!bytes || !mem.regionBase)
   {
     if(bytes)
       qWarning() << "DeckLink: frame bytes" << bytes
-                 << "are not from our allocator - direct readback unavailable";
+                 << "are not from our buffers - direct readback unavailable";
     buf->EndAccess(bmdBufferAccessWrite);
     std::lock_guard lock{m_poolMutex};
     m_free.push_back(frame);
