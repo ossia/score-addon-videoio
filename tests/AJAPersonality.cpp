@@ -164,6 +164,11 @@ int main(int argc, char** argv)
 {
   bool doList = (argc <= 1);
   bool doInputs = false;
+  // GetDynamicDeviceList() only reports personalities whose bitfile has been
+  // registered — AddDynamicDirectory must be called first (ntv2switchbitfile
+  // scans "."). Without it the list is empty and the board looks as though it
+  // had no alternate personality at all.
+  const char* firmwareDir = "/opt/aja/firmware";
   const char* loadTok = nullptr;
   int onlyDevice = -1;
   for(int i = 1; i < argc; ++i)
@@ -176,6 +181,8 @@ int main(int argc, char** argv)
       loadTok = argv[++i];
     else if(!std::strcmp(argv[i], "--device") && i + 1 < argc)
       onlyDevice = std::atoi(argv[++i]);
+    else if(!std::strcmp(argv[i], "--firmware-dir") && i + 1 < argc)
+      firmwareDir = argv[++i];
   }
 
   CNTV2DeviceScanner scanner;
@@ -214,6 +221,7 @@ int main(int argc, char** argv)
       rc = 2;
       continue;
     }
+    card.AddDynamicDirectory(firmwareDir);
     if(doInputs)
     {
       std::printf(
