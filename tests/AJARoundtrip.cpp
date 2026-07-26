@@ -1233,30 +1233,66 @@ int runSweep(const Options& opt)
   std::printf("Input  card %d: %s\n", opt.inDevice, ::NTV2DeviceIDToString(idIn).c_str());
   std::printf("Render backend: %s\n", apiName(opt.api));
 
-  // Firmware-supported formats = table ∩ CanDoVideoFormat(both cards).
+  // The card's own firmware is the single source of truth for what exists.
+  // This used to default to a hardcoded curated table, which meant --list
+  // reported that table rather than the board: on a Kona5-8K it showed six
+  // UHD-single-link modes while the firmware actually advertises 28 quad-link
+  // and 18 quad-quad (8K) formats and *no* UHD-single-link at all. Anything
+  // hardcoded goes stale the moment a different card, personality or SDK shows
+  // up, so the table now only supplies the DEFAULT SELECTION of what to run.
+  const std::vector<VFmt>& firmware = enumerateFirmwareFormats(idOut, idIn);
+
+  const auto inCuratedDefault = [](const VFmt& vf) {
+    for(const auto& c : videoFormatTable())
+      if(vf.fmt == c.fmt)
+        return true;
+    return false;
+  };
+
   std::vector<VFmt> formats;
-  // --all-formats: every firmware-supported NTV2 format (already filtered);
-  // otherwise the curated table filtered by per-card firmware support.
-  const std::vector<VFmt>& table
-      = opt.allFormats ? enumerateFirmwareFormats(idOut, idIn) : videoFormatTable();
-  for(const auto& vf : table)
+  for(const auto& vf : firmware)
   {
-    const bool ok = opt.allFormats
-                    || (::NTV2DeviceCanDoVideoFormat(idOut, vf.fmt)
-                        && ::NTV2DeviceCanDoVideoFormat(idIn, vf.fmt));
+    // No --formats: run the curated default subset (a full firmware sweep is
+    // 80+ formats x pixel formats). --all-formats: everything the card exposes.
+    // --formats: exactly what was asked for, matched against the SDK's own name.
     const bool selected
-        = opt.formats.empty()
-          || std::find(opt.formats.begin(), opt.formats.end(), vf.name) != opt.formats.end();
-    if(ok && selected)
+        = !opt.formats.empty()
+              ? std::find(opt.formats.begin(), opt.formats.end(), vf.name)
+                    != opt.formats.end()
+              : (opt.allFormats || inCuratedDefault(vf));
+    if(selected)
       formats.push_back(vf);
+  }
+
+  // A --formats token that matches nothing is a typo or a name that changed
+  // between SDKs; running a subset silently is how a cell quietly disappears.
+  if(!opt.formats.empty() && formats.size() != opt.formats.size())
+  {
+    for(const auto& want : opt.formats)
+    {
+      const bool found = std::any_of(
+          formats.begin(), formats.end(),
+          [&](const VFmt& vf) { return want == vf.name; });
+      if(!found)
+        std::printf(
+            "warning: --formats '%s' matches no format this card exposes\n",
+            want.c_str());
+    }
   }
 
   if(opt.listOnly)
   {
-    std::printf("\nFirmware-supported formats (both cards):\n");
-    for(const auto& vf : formats)
-      std::printf("  %-12s %dx%d @ %.2f%s\n", vf.name, vf.w, vf.h, vf.rate,
-                  vf.quad ? " (quad-link)" : "");
+    std::printf(
+        "\nFormats this hardware exposes (both cards), from the firmware:\n");
+    std::printf("  %-28s %-11s %8s  %-16s %s\n", "name", "geometry", "rate",
+                "link", "default sweep");
+    for(const auto& vf : firmware)
+      std::printf(
+          "  %-28s %5dx%-5d %8.2f  %-16s %s\n", vf.name, vf.w, vf.h, vf.rate,
+          vf.eightK  ? "quad-quad (8K)"
+          : vf.quad  ? "quad-link (4K)"
+                     : "single-link",
+          inCuratedDefault(vf) ? "yes" : "");
     std::printf("\nPixel formats:\n");
     for(const auto& pf : pixelFormatTable())
       std::printf("  %-8s %s\n", pf.outName, pf.cpuCapture ? "(cpu+gpu rx)" : "(gpu rx only)");
