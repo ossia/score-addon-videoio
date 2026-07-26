@@ -22,6 +22,8 @@
 #include <ajantv2/includes/ntv2devicescanner.h>
 #include <ajantv2/includes/ntv2utils.h>
 
+#include <ajabase/system/systemtime.h>
+
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -91,6 +93,50 @@ void dumpQuadQuad(NTV2DeviceID id)
   }
 }
 
+/// What each SDI spigot actually sees.
+///
+/// Kona5 spigots are BIDIRECTIONAL and come up as transmitters, so a read-only
+/// GetInputVideoFormat reports "no signal" on every connector even while a
+/// signal is demonstrably arriving — the first version of this function did
+/// exactly that, and would have been read as a cabling fault. The spigot has to
+/// be put into receive and given time to lock first, which mutates card state:
+/// hence --inputs rather than doing it inside --list.
+void reportInputs(CNTV2Card& card)
+{
+  std::printf("    per-SDI detected input (spigots switched to receive):\n");
+  const NTV2DeviceID id = card.GetDeviceID();
+  std::vector<NTV2Channel> switched;
+  for(int ch = 0; ch < 8; ++ch)
+  {
+    const auto chan = static_cast<NTV2Channel>(ch);
+    if(!::NTV2DeviceCanDoInputSource(id, ::NTV2ChannelToInputSource(chan)))
+      continue;
+    card.EnableChannel(chan);
+    if(::NTV2DeviceHasBiDirectionalSDI(id))
+    {
+      card.SetSDITransmitEnable(chan, false);
+      switched.push_back(chan);
+    }
+  }
+  // The receivers need a moment to lock after the direction flip; without this
+  // everything still reads UNKNOWN and the probe lies in the other direction.
+  if(!switched.empty())
+    AJATime::Sleep(500);
+
+  for(int ch = 0; ch < 8; ++ch)
+  {
+    const auto chan = static_cast<NTV2Channel>(ch);
+    const auto src = ::NTV2ChannelToInputSource(chan);
+    if(!::NTV2DeviceCanDoInputSource(id, src))
+      continue;
+    const NTV2VideoFormat fmt = card.GetInputVideoFormat(src);
+    std::printf(
+        "      SDI %d: %s\n", ch + 1,
+        fmt == NTV2_FORMAT_UNKNOWN ? "(no signal)"
+                                   : ::NTV2VideoFormatToString(fmt).c_str());
+  }
+}
+
 void inspect(CNTV2Card& card, unsigned index)
 {
   const NTV2DeviceID cur = card.GetDeviceID();
@@ -103,7 +149,6 @@ void inspect(CNTV2Card& card, unsigned index)
       "    base id        : %s (0x%08x)\n", ::NTV2DeviceIDToString(base).c_str(),
       unsigned(base));
   reportFormatClasses(cur);
-  dumpQuadQuad(cur);
 
   const NTV2DeviceIDList loadable = card.GetDynamicDeviceList();
   std::printf("    loadable       :");
@@ -118,12 +163,15 @@ void inspect(CNTV2Card& card, unsigned index)
 int main(int argc, char** argv)
 {
   bool doList = (argc <= 1);
+  bool doInputs = false;
   const char* loadTok = nullptr;
   int onlyDevice = -1;
   for(int i = 1; i < argc; ++i)
   {
     if(!std::strcmp(argv[i], "--list"))
       doList = true;
+    else if(!std::strcmp(argv[i], "--inputs"))
+      doInputs = true;
     else if(!std::strcmp(argv[i], "--load") && i + 1 < argc)
       loadTok = argv[++i];
     else if(!std::strcmp(argv[i], "--device") && i + 1 < argc)
@@ -164,6 +212,13 @@ int main(int argc, char** argv)
     {
       std::printf("card %u: open failed\n", i);
       rc = 2;
+      continue;
+    }
+    if(doInputs)
+    {
+      std::printf(
+          "card %u: %s\n", i, ::NTV2DeviceIDToString(card.GetDeviceID()).c_str());
+      reportInputs(card);
       continue;
     }
     if(doList || !loadTok)
