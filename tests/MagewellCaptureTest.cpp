@@ -105,6 +105,10 @@ double psnrRgb(const uint8_t* a, const uint8_t* b, int w, int h)
 
 struct ChannelResult
 {
+  /// Engaged capture rung, and whether a pinned rung failed to engage.
+  std::string rxStrategy = "-";
+  bool rxPinUnmet = false;
+
   int channel{};
   std::string status = "SKIP(no-lock)";
   int w{}, h{};
@@ -216,6 +220,11 @@ ChannelResult runChannel(
     r.minPsnr = psnrMin;
   }
 
+  // Read before teardown deletes the node.
+  if(const char* n = in->engagedCaptureStrategy())
+    r.rxStrategy = n;
+  r.rxPinUnmet = in->captureStrategyPinUnmet();
+
   if(r.frames == 0)
     r.status = "SKIP(no-lock)";
   else if(r.meanLuma < 4.0)
@@ -224,6 +233,13 @@ ChannelResult runChannel(
     r.status = "FAIL(psnr)";
   else
     r.status = "PASS";
+
+  // A pinned rung that did not engage means the numbers describe another path;
+  // a rung that cannot exist on this backend is a skip, not a quality failure.
+  if(r.rxPinUnmet)
+    r.status = "FAIL(rung-not-engaged)";
+  else if(r.rxStrategy == "-" && r.frames > 0)
+    r.status = "SKIP(rung-unavailable)";
 
   graph.reset();
   delete bg;
@@ -311,18 +327,18 @@ int main(int argc, char** argv)
   }
 
   std::printf(
-      "\n%-4s %-11s %6s %6s %8s %8s %8s %-14s\n", "ch", "geometry", "frames",
-      "fps", "luma", "minPSNR", "meanPSNR", "status");
-  for(int i = 0; i < 80; ++i)
+      "\n%-4s %-11s %-15s %6s %6s %8s %8s %8s %-22s\n", "ch", "geometry",
+      "rx-strategy", "frames", "fps", "luma", "minPSNR", "meanPSNR", "status");
+  for(int i = 0; i < 108; ++i)
     std::printf("-");
   std::printf("\n");
   bool anyFail = false, anyPass = false;
   for(const auto& r : rows)
   {
     std::printf(
-        "%-4d %dx%-6d %6d %6.1f %8.1f %8.2f %8.2f %-14s\n", r.channel, r.w,
-        r.h, r.frames, r.fps, r.meanLuma, r.minPsnr, r.meanPsnr,
-        r.status.c_str());
+        "%-4d %dx%-6d %-15s %6d %6.1f %8.1f %8.2f %8.2f %-22s\n", r.channel,
+        r.w, r.h, r.rxStrategy.c_str(), r.frames, r.fps, r.meanLuma, r.minPsnr,
+        r.meanPsnr, r.status.c_str());
     anyFail |= r.status.rfind("FAIL", 0) == 0;
     anyPass |= r.status == "PASS";
   }

@@ -297,8 +297,19 @@ struct GpuReceiver
       m.recordPsnr(px, w, h, idx);
   }
 
+  /// Snapshotted here: stop() deletes the node, so reading it afterwards
+  /// silently reports nothing at all.
+  std::string engagedRx = "-";
+  bool pinUnmet = false;
+
   void stop()
   {
+    if(in)
+    {
+      if(const char* n = in->engagedCaptureStrategy())
+        engagedRx = n;
+      pinUnmet = in->captureStrategyPinUnmet();
+    }
     graph.reset();
     delete bg;
     bg = nullptr;
@@ -338,6 +349,11 @@ struct Result
   uint64_t txDrops = 0;
   double fps = 0, targetFps = 0, meanLatencyMs = 0, minPsnr = 0, meanPsnr = 0;
   double jitterMs = 0;
+  /// Engaged CAPTURE rung (RDMA / DVP / CPU-hostimport / CPU-QRhi) and whether a
+  /// pinned rung failed to engage. Without this a row cannot say which path it
+  /// measured — the mistake that invalidated four rounds of results.
+  std::string rxStrategy = "-";
+  bool rxPinUnmet = false;
 };
 
 struct Options
@@ -541,6 +557,9 @@ Result runCell(
 
   rcv.stop();
 
+  r.rxStrategy = rcv.engagedRx;
+  r.rxPinUnmet = rcv.pinUnmet;
+
   VerifyMetrics& M = rcv.m;
   r.recv = M.frames.load();
   r.gaps = M.gaps.load();
@@ -583,6 +602,13 @@ Result runCell(
       r.status = "PASS";
   }
 
+  // A pinned rung that did not engage outranks every other verdict: the numbers
+  // describe a different path than the one requested.
+  if(r.rxPinUnmet)
+    r.status = "FAIL(rung-not-engaged)";
+  else if(r.rxStrategy == "-" && r.status.rfind("SKIP", 0) != 0)
+    r.status = "SKIP(rung-unavailable)";
+
   graph.reset();
   delete out;
   delete src;
@@ -592,17 +618,18 @@ Result runCell(
 void printMatrix(const std::vector<Result>& rows)
 {
   std::printf(
-      "\n%-5s %-22s %-8s %-16s %5s %5s %6s %5s %5s %5s %8s %8s %-14s\n", "conn",
-      "mode", "pixfmt", "strategy", "sent", "recv", "fps", "txdrp", "lost",
-      "rep", "lat(ms)", "minPSNR", "status");
+      "\n%-5s %-22s %-8s %-16s %-15s %5s %5s %6s %5s %5s %5s %8s %8s %-22s\n",
+      "conn", "mode", "pixfmt", "tx-strategy", "rx-strategy", "sent", "recv",
+      "fps", "txdrp", "lost", "rep", "lat(ms)", "minPSNR", "status");
   for(int i = 0; i < 130; ++i)
     std::printf("-");
   std::printf("\n");
   for(const auto& r : rows)
     std::printf(
-        "%-5s %-22s %-8s %-16s %5d %5d %6.1f %5llu %5d %5d %8.2f %8.2f %-14s\n",
+        "%-5s %-22s %-8s %-16s %-15s %5d %5d %6.1f %5llu %5d %5d %8.2f %8.2f "
+        "%-22s\n",
         r.connector.c_str(), r.mode.c_str(), r.pixfmt.c_str(),
-        r.strategy.c_str(), r.sent, r.recv, r.fps,
+        r.strategy.c_str(), r.rxStrategy.c_str(), r.sent, r.recv, r.fps,
         (unsigned long long)r.txDrops, r.gaps, r.repeats, r.meanLatencyMs,
         r.minPsnr, r.status.c_str());
 }
