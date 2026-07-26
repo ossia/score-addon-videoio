@@ -829,6 +829,9 @@ int runLiveSwitch(const Options& opt, const std::vector<VMode>& vmodes, const PF
   inS.deviceIndex = opt.device;
   inS.pixelFormat = pf.fmt;
   inS.connection = bmdVideoConnectionSDI;
+  for(const auto& c : opt.onlyConns)
+    if(c == "hdmi")
+      inS.connection = bmdVideoConnectionHDMI;
   inS.autoDetect = true; // follow the wire live
   const int sinkW = std::max(A->w, B->w), sinkH = std::max(A->h, B->h);
 
