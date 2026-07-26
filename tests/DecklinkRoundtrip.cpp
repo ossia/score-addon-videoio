@@ -395,9 +395,17 @@ std::vector<VMode> enumerateModes(int deviceIndex)
       free(const_cast<char*>(nm));
     }
 #endif
-    for(auto& c : v.name)
-      if(c == ' ')
-        c = '_';
+    // "1080p59.94" -> "1080p5994": the dot is the only thing standing between
+    // the SDK's names and the mode tokens used on the command line.
+    std::string norm;
+    norm.reserve(v.name.size());
+    for(char c : v.name)
+    {
+      if(c == '.')
+        continue;
+      norm.push_back(c == ' ' ? '_' : c);
+    }
+    v.name = std::move(norm);
     // Progressive only: the harness paints/verifies full frames. Interlaced
     // and PsF cells would need field-aware verification.
     const auto fields = m->GetFieldDominance();
@@ -563,6 +571,11 @@ Result runCell(
   {
     if(M.psnrCount.load() == 0)
       r.status = "SKIP(no-lock)";
+    // A capture that never advances its frame index delivered nothing at all
+    // (dead connector, unplugged loopback, wedged DMA). Saying "psnr" there
+    // sends the reader hunting for a colour-conversion bug instead.
+    else if(r.recv > 2 && r.repeats >= r.recv - 2)
+      r.status = "FAIL(no-capture)";
     else if(r.minPsnr < pf.psnrThreshold)
       r.status = (rgbRequested && r.minPsnr >= 15.0) ? "SKIP(rgb-wire-degraded)"
                                                      : "FAIL(psnr)";
@@ -718,7 +731,7 @@ int main(int argc, char** argv)
   QCommandLineOption dump("dump", "Save first verified frame per cell", "prefix");
   QCommandLineOption list("list", "Print supported matrix and exit");
   QCommandLineOption apiOpt(
-      "api", "Render backend: opengl | vulkan", "api", "opengl");
+      "api", "Render backend: opengl | vulkan | d3d11 | d3d12", "api", "opengl");
   QCommandLineOption liveSwitch(
       "live-switch",
       "Live input-resolution test: drive the output from mode A to mode B "
@@ -729,8 +742,22 @@ int main(int argc, char** argv)
   p.process(*qApp);
 
   Options opt;
-  if(p.value(apiOpt) == "vulkan")
-    opt.api = score::gfx::GraphicsApi::Vulkan;
+  {
+    const auto api = p.value(apiOpt).toLower();
+    if(api == "vulkan")
+      opt.api = score::gfx::GraphicsApi::Vulkan;
+#if defined(_WIN32)
+    else if(api == "d3d11")
+      opt.api = score::gfx::GraphicsApi::D3D11;
+    else if(api == "d3d12")
+      opt.api = score::gfx::GraphicsApi::D3D12;
+#endif
+    else if(api != "opengl")
+    {
+      std::printf("unknown --api '%s'\n", api.toStdString().c_str());
+      return 2;
+    }
+  }
   opt.seconds = p.value(secs).toDouble();
   opt.device = p.value(dev).toInt();
   opt.list = p.isSet(list);
@@ -805,6 +832,14 @@ int main(int argc, char** argv)
         rows.push_back(runCell(opt, cn, vm, pf));
       }
     }
+  }
+
+  if(rows.empty())
+  {
+    std::printf(
+        "no cell matched the --conn/--modes/--pixfmt filters; nothing was "
+        "tested\n");
+    return 2;
   }
 
   printMatrix(rows);

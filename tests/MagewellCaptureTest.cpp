@@ -254,7 +254,7 @@ int main(int argc, char** argv)
   QCommandLineOption dump("dump", "Save first frame per channel", "prefix");
   QCommandLineOption list("list", "List channels and exit");
   QCommandLineOption apiOpt(
-      "api", "Render backend: opengl | vulkan", "api", "opengl");
+      "api", "Render backend: opengl | vulkan | d3d11 | d3d12", "api", "opengl");
   p.addOptions({chans, secs, expect, dump, list, apiOpt});
   p.addHelpOption();
   p.process(*qApp);
@@ -267,6 +267,24 @@ int main(int argc, char** argv)
     return 0;
   if(devices.empty())
     return 2;
+
+  auto api = score::gfx::GraphicsApi::OpenGL;
+  {
+    const auto name = p.value(apiOpt).toLower();
+    if(name == "vulkan")
+      api = score::gfx::GraphicsApi::Vulkan;
+#if defined(_WIN32)
+    else if(name == "d3d11")
+      api = score::gfx::GraphicsApi::D3D11;
+    else if(name == "d3d12")
+      api = score::gfx::GraphicsApi::D3D12;
+#endif
+    else if(name != "opengl")
+    {
+      std::printf("unknown --api '%s'\n", name.toStdString().c_str());
+      return 2;
+    }
+  }
 
   const bool gradient = p.value(expect) == "aja-gradient";
   std::vector<ChannelResult> rows;
@@ -289,8 +307,7 @@ int main(int argc, char** argv)
     std::fflush(stdout);
     rows.push_back(runChannel(
         ch, p.value(secs).toDouble(), gradient, p.value(dump).toStdString(),
-        p.value(apiOpt) == "vulkan" ? score::gfx::GraphicsApi::Vulkan
-                                    : score::gfx::GraphicsApi::OpenGL));
+        api));
   }
 
   std::printf(
