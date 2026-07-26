@@ -313,6 +313,11 @@ bool DeckLinkOutputBackend::open(score::gfx::GraphicsApi)
         m_allocator.reset();
       }
     }
+    else
+    {
+      qWarning() << "DeckLink: no IDeckLinkOutput_v14_2_1 - output frames use "
+                    "the SDK's own (unaligned) allocator";
+    }
   }
 
   if(m_output->EnableVideoOutput(m_settings.displayMode, bmdVideoOutputFlagDefault)
