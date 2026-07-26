@@ -256,8 +256,42 @@ struct VerifyMetrics
 // Capture receiver: DeckLinkCaptureNode -> BackgroundNode readback, verified
 // on the render thread each tick.
 // ---------------------------------------------------------------------------
+/// Per-phase wall time, to attribute the gap between the harness's achieved
+/// rate and the card's own (30.03 fps at 2160p30, measured pure-SDK). Split so
+/// product-path cost (send, capture upload+decode) is distinguishable from
+/// verification-only cost (readback to CPU, index decode, PSNR) — the latter
+/// does not exist in score, which samples the capture texture on the GPU.
+struct PhaseProfile
+{
+  double sendMs = 0;     // out->render(): graph + encode + readback + memcpy to card
+  double rxRenderMs = 0; // bg->render(): capture upload + decode + InvertY + readback
+  double idxMs = 0;      // index band decode (verification)
+  double psnrMs = 0;     // reference paint + PSNR compare (verification)
+  int ticks = 0;
+  int psnrCalls = 0;
+
+  void report(double fps, double target) const
+  {
+    if(ticks == 0)
+      return;
+    const double tick = 1000.0 / (fps > 0 ? fps : 1);
+    std::printf(
+        "  phases/frame: send %6.2f ms | rx-render %6.2f ms | idx %5.2f ms | "
+        "psnr %5.2f ms (amortised over %d calls) | total %6.2f of %6.2f ms "
+        "budget (target %.2f fps)\n",
+        sendMs / ticks, rxRenderMs / ticks, idxMs / ticks, psnrMs / ticks,
+        psnrCalls, (sendMs + rxRenderMs + idxMs + psnrMs) / ticks, tick, target);
+    const double verify = (rxRenderMs + idxMs + psnrMs) / ticks;
+    std::printf(
+        "  verification-only cost: %6.2f ms/frame (%.0f%% of the tick) — score "
+        "samples the capture texture instead of reading it back\n",
+        verify, 100.0 * verify / tick);
+  }
+};
+
 struct GpuReceiver
 {
+  PhaseProfile* prof{};
   std::unique_ptr<score::gfx::Graph> graph;
   DeckLinkCaptureNode* in{};
   score::gfx::BackgroundNode* bg{};
@@ -286,15 +320,32 @@ struct GpuReceiver
   {
     if(!bg || !bg->canRender())
       return;
+    const auto tA = nowNs();
     bg->render();
+    const auto tB = nowNs();
     auto& rb = *bg->shared_readback;
+    if(prof)
+      prof->rxRenderMs += (tB - tA) / 1e6;
     if(rb.data.isEmpty() || rb.pixelSize.isEmpty())
       return;
     const int w = rb.pixelSize.width(), h = rb.pixelSize.height();
     const auto* px = reinterpret_cast<const uint8_t*>(rb.data.constData());
+    const auto tC = nowNs();
     const int idx = idxFromRgba(px, w, h);
-    if(m.recordIndex(idx, nowNs()))
+    const auto tD = nowNs();
+    const bool wantPsnr = m.recordIndex(idx, nowNs());
+    if(wantPsnr)
       m.recordPsnr(px, w, h, idx);
+    const auto tE = nowNs();
+    if(prof)
+    {
+      prof->idxMs += (tD - tC) / 1e6;
+      if(wantPsnr)
+      {
+        prof->psnrMs += (tE - tD) / 1e6;
+        ++prof->psnrCalls;
+      }
+    }
   }
 
   /// Snapshotted here: stop() deletes the node, so reading it afterwards
@@ -354,6 +405,7 @@ struct Result
   /// measured — the mistake that invalidated four rounds of results.
   std::string rxStrategy = "-";
   bool rxPinUnmet = false;
+  PhaseProfile profile;
 };
 
 struct Options
@@ -537,9 +589,14 @@ Result runCell(
   {
     QTimer render;
     render.setTimerType(Qt::PreciseTimer);
+    PhaseProfile prof;
+    rcv.prof = &prof;
     QObject::connect(&render, &QTimer::timeout, [&] {
+      const auto t0 = nowNs();
       out->render();
+      prof.sendMs += (nowNs() - t0) / 1e6;
       rcv.renderTick();
+      ++prof.ticks;
     });
     render.start(int(1000.0 / std::max(1.0, vm.rate)));
 
@@ -553,6 +610,7 @@ Result runCell(
     stopper.start(qint64(opt.seconds * 1000));
     loop.exec();
     render.stop();
+    r.profile = prof;
   }
 
   rcv.stop();
@@ -625,6 +683,7 @@ void printMatrix(const std::vector<Result>& rows)
     std::printf("-");
   std::printf("\n");
   for(const auto& r : rows)
+  {
     std::printf(
         "%-5s %-22s %-8s %-16s %-15s %5d %5d %6.1f %5llu %5d %5d %8.2f %8.2f "
         "%-22s\n",
@@ -632,6 +691,8 @@ void printMatrix(const std::vector<Result>& rows)
         r.strategy.c_str(), r.rxStrategy.c_str(), r.sent, r.recv, r.fps,
         (unsigned long long)r.txDrops, r.gaps, r.repeats, r.meanLatencyMs,
         r.minPsnr, r.status.c_str());
+    r.profile.report(r.fps, r.targetFps);
+  }
 }
 
 // Live input-resolution switch: one persistent Auto receiver, the output driven
