@@ -11,13 +11,118 @@ extern "C" {
 
 #include <QDebug>
 
+#if defined(_WIN32)
+#include <malloc.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
+#include <map>
+#include <mutex>
 #include <chrono>
 #include <cstring>
 
 namespace Gfx::DeckLink
 {
+namespace
+{
+/// Page-aligned, pooled frame memory for the card.
+///
+/// By default the SDK allocates output frames itself with no alignment
+/// guarantee, and every frame is memcpy'd into that buffer. Owning the memory
+/// gives two things: aligned, reused pages (so the copy does not fault in fresh
+/// ones each frame), and — the real reason — a host pointer we are allowed to
+/// import as GPU-visible memory, which is what lets the readback land in the
+/// card's frame directly instead of being copied into it.
+class AlignedFrameAllocator final : public IDeckLinkMemoryAllocator
+{
+public:
+  static constexpr std::size_t kAlign = 4096; // >= minImportedHostPointerAlignment
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** ppv) override
+  {
+    if(!ppv)
+      return E_POINTER;
+    if(IsEqualIID(iid, IID_IDeckLinkMemoryAllocator))
+    {
+      *ppv = static_cast<IDeckLinkMemoryAllocator*>(this);
+      AddRef();
+      return S_OK;
+    }
+    *ppv = nullptr;
+    return E_NOINTERFACE;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++m_ref; }
+  ULONG STDMETHODCALLTYPE Release() override
+  {
+    const ULONG r = --m_ref;
+    if(r == 0)
+      delete this;
+    return r;
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  AllocateBuffer(unsigned int bufferSize, void** allocatedBuffer) override
+  {
+    if(!allocatedBuffer)
+      return E_POINTER;
+    std::lock_guard lock{m_mutex};
+    // Reuse a retired buffer of the same size before asking the OS again.
+    if(auto it = m_free.find(bufferSize); it != m_free.end() && !it->second.empty())
+    {
+      *allocatedBuffer = it->second.back();
+      it->second.pop_back();
+      return S_OK;
+    }
+    const std::size_t rounded = ((bufferSize + kAlign - 1) / kAlign) * kAlign;
+#if defined(_WIN32)
+    void* p = _aligned_malloc(rounded, kAlign);
+#else
+    void* p = std::aligned_alloc(kAlign, rounded);
+#endif
+    if(!p)
+      return E_OUTOFMEMORY;
+    m_sizes[p] = bufferSize;
+    *allocatedBuffer = p;
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE ReleaseBuffer(void* buffer) override
+  {
+    if(!buffer)
+      return S_OK;
+    std::lock_guard lock{m_mutex};
+    if(auto it = m_sizes.find(buffer); it != m_sizes.end())
+      m_free[it->second].push_back(buffer);
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE Commit() override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE Decommit() override
+  {
+    std::lock_guard lock{m_mutex};
+    for(auto& [sz, bufs] : m_free)
+      for(void* p : bufs)
+      {
+#if defined(_WIN32)
+        _aligned_free(p);
+#else
+        std::free(p);
+#endif
+        m_sizes.erase(p);
+      }
+    m_free.clear();
+    return S_OK;
+  }
+
+private:
+  std::atomic<ULONG> m_ref{1};
+  std::mutex m_mutex;
+  std::map<void*, unsigned int> m_sizes;
+  std::map<unsigned int, std::vector<void*>> m_free;
+};
+} // namespace
+
 namespace
 {
 
@@ -181,6 +286,18 @@ bool DeckLinkOutputBackend::open(score::gfx::GraphicsApi)
         qWarning() << "DeckLink: RGB playout — the HDMI mirror of this "
                       "output will carry no signal on this hardware; use the "
                       "SDI connector or a YUV pixel format for HDMI.";
+    }
+  }
+
+  // Must be installed before the frames are created, or the SDK's own
+  // allocator has already handed out unaligned memory.
+  if(!qEnvironmentVariableIsSet("SCORE_DECKLINK_SDK_ALLOCATOR"))
+  {
+    m_allocator = ComPtr<IDeckLinkMemoryAllocator>(new AlignedFrameAllocator);
+    if(m_output->SetVideoOutputFrameMemoryAllocator(m_allocator.get()) != S_OK)
+    {
+      qWarning() << "DeckLink: custom frame allocator refused; using the SDK's";
+      m_allocator.reset();
     }
   }
 

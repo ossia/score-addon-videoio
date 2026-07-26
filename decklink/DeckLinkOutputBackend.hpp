@@ -92,6 +92,8 @@ private:
 
   ComPtr<IDeckLink> m_device;
   ComPtr<IDeckLinkOutput> m_output;
+  /// Page-aligned pooled frame memory; see the .cpp. Null = SDK's allocator.
+  ComPtr<IDeckLinkMemoryAllocator> m_allocator;
   /// Config settings revert when the IDeckLinkConfiguration object is
   /// released — keep it alive for the stream's lifetime (444 wire flag).
   ComPtr<IDeckLinkConfiguration> m_cfg;

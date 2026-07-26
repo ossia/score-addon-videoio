@@ -767,6 +767,12 @@ void printMatrix(const std::vector<Result>& rows)
         r.strategy.c_str(), r.rxStrategy.c_str(), r.sent, r.recv, r.fps,
         (unsigned long long)r.txDrops, r.gaps, r.repeats, r.meanLatencyMs,
         r.minPsnr, r.status.c_str());
+    // Pacing, not just throughput: a change that raises fps while making
+    // arrival intervals lumpier is not an improvement for video.
+    std::printf(
+        "  pacing: interval stddev %6.2f ms | mean latency %7.2f ms | lost %d "
+        "| repeats %d\n",
+        r.jitterMs, r.meanLatencyMs, r.gaps, r.repeats);
     r.profile.report(r.fps, r.targetFps);
   }
 }
