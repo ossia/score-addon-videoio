@@ -371,8 +371,10 @@ pickAjaCaptureStrategy(
     return std::make_unique<AjaRdmaCaptureGL>(card, pixfmt);
 #endif
 #if defined(AJA_HAS_RDMA_CAPTURE_VULKAN)
-  // Linux Vulkan: stub (returns false) — pending strategy-owned
-  // exportable outputTexture contract.
+  // Linux Vulkan: RDMA-Vulkan/T3, a full implementation (the strategy-owned
+  // exportable outputTexture contract it was once waiting on is in place).
+  // Verified engaging on the Quadro box: AJA capture never reaches the
+  // CPU-staging rung there because this one succeeds.
   if(allowRdma && backend == QRhi::Vulkan)
     return std::make_unique<AjaRdmaCaptureVulkan>(card, pixfmt);
 #endif
