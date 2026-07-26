@@ -129,6 +129,7 @@ if(WIN32 AND WIDL_EXECUTABLE AND EXISTS "${DECKLINK_SDK_ROOT}/Win/include/DeckLi
   list(APPEND VIDEOIO_GEN_SRCS "${DL_GEN_DIR}/DeckLinkAPI_i.c")
   list(APPEND VIDEOIO_INCS "${DL_GEN_DIR}")
   list(APPEND VIDEOIO_DEFS SCORE_HAS_DECKLINK=1)
+  set(VIDEOIO_HAS_DECKLINK TRUE)
   message(STATUS "score-addon-videoio: DeckLink enabled (widl: ${WIDL_EXECUTABLE})")
 else()
   # Linux: the SDK ships ready C++ headers (DeckLinkAPI.h) and a dispatch TU

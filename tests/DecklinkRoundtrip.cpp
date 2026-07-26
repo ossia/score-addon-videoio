@@ -438,7 +438,7 @@ Result runCell(
        && dev->QueryInterface(IID_IDeckLinkOutput, dout.putVoid()) == S_OK)
     {
       BMDDisplayMode actual{};
-      bool inOk = false, outOk = false;
+      dlbool_t inOk = false, outOk = false;
       din->DoesSupportVideoMode(
           cn.conn, vm.mode, pf.fmt, bmdNoVideoInputConversion,
           bmdSupportedVideoModeDefault, &actual, &inOk);
