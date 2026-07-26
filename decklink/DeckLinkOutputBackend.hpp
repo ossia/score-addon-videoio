@@ -72,6 +72,12 @@ public:
   /// back to CPU readback when no DVP backend is present.
   bool prefersGpuDownload() const noexcept override;
   score::gfx::interop::PacedFramePump::Hooks pacingHooks() override;
+  /// Direct-readback frame memory: acquire() pops a free pool frame, opens its
+  /// IDeckLinkVideoBuffer for write access and hands out GetBytes(); the GPU
+  /// then writes the encoded frame into it and submit() schedules that very
+  /// frame (no copy). Consumes the frame's pacing permit at acquire time, so
+  /// waitForTick() stops gating once this path is live (m_directPacing).
+  score::gfx::interop::FrameMemoryProvider frameMemoryProvider() override;
 
   /// Driver-thread entry points, invoked by the completion callback.
   void onFrameCompleted(IDeckLinkVideoFrame* frame) noexcept;
@@ -85,15 +91,21 @@ public:
 private:
   bool waitForTick();
   bool submitFrame(void* framePtr);
+  /// Display-time resync + ScheduleVideoFrame + preroll start for a frame whose
+  /// bytes are complete. On failure the frame returns to the pool + a permit.
+  bool scheduleFilledFrame(IDeckLinkMutableVideoFrame* frame);
+  void* acquireFrameMemory();
+  void cancelFrameMemory(void* bytes);
   void startPlaybackIfPrerolled();
   void drainPermits() noexcept;
+  void releaseAcquiredFrames() noexcept;
 
   DeckLinkOutputSettings m_settings;
 
   ComPtr<IDeckLink> m_device;
   ComPtr<IDeckLinkOutput> m_output;
   /// Page-aligned pooled frame memory; see the .cpp. Null = SDK's allocator.
-  ComPtr<IDeckLinkMemoryAllocator> m_allocator;
+  ComPtr<IDeckLinkMemoryAllocator_v14_2_1> m_allocator;
   /// Config settings revert when the IDeckLinkConfiguration object is
   /// released — keep it alive for the stream's lifetime (444 wire flag).
   ComPtr<IDeckLinkConfiguration> m_cfg;
@@ -105,6 +117,21 @@ private:
   std::mutex m_poolMutex;
   std::vector<ComPtr<IDeckLinkMutableVideoFrame>> m_pool;
   std::vector<IDeckLinkMutableVideoFrame*> m_free;
+
+  // Pool frames handed to the GPU via frameMemoryProvider(): StartAccess is
+  // held from acquire until submit/cancel. Guarded by m_poolMutex (render
+  // thread acquires, pump thread submits/discards).
+  struct AcquiredFrame
+  {
+    void* bytes{};
+    IDeckLinkMutableVideoFrame* frame{};
+    ComPtr<IDeckLinkVideoBuffer> buf;
+  };
+  std::vector<AcquiredFrame> m_acquired;
+  /// Set once acquireFrameMemory() has ever handed out a frame: from then on
+  /// every pushed frame already owns a pool slot + permit, so waitForTick()
+  /// must not consume another permit.
+  std::atomic<bool> m_directPacing{false};
 
   int m_width{};
   int m_height{};

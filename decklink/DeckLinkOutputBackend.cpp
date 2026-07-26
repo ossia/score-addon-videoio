@@ -11,10 +11,6 @@ extern "C" {
 
 #include <QDebug>
 
-#if defined(_WIN32)
-#include <malloc.h>
-#endif
-
 #include <algorithm>
 #include <atomic>
 #include <map>
@@ -34,18 +30,27 @@ namespace
 /// ones each frame), and — the real reason — a host pointer we are allowed to
 /// import as GPU-visible memory, which is what lets the readback land in the
 /// card's frame directly instead of being copied into it.
-class AlignedFrameAllocator final : public IDeckLinkMemoryAllocator
+// SDK 16 keeps the OUTPUT frame allocator only on the versioned _v14_2_1
+// interface (the modern IDeckLinkVideoBufferAllocatorProvider is input-only),
+// so the legacy interface is the supported way to own output frame memory.
+class AlignedFrameAllocator final : public IDeckLinkMemoryAllocator_v14_2_1
 {
 public:
   static constexpr std::size_t kAlign = 4096; // >= minImportedHostPointerAlignment
+#if defined(_WIN32)
+  // D3D12's OpenExistingHeapFromAddress only accepts VirtualAlloc regions and
+  // derives the heap size from the region, which must cover the placed
+  // buffer's 64 KiB-aligned allocation size.
+  static constexpr std::size_t kWinRound = 65536;
+#endif
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** ppv) override
   {
     if(!ppv)
       return E_POINTER;
-    if(IsEqualIID(iid, IID_IDeckLinkMemoryAllocator))
+    if(IsEqualIID(iid, IID_IDeckLinkMemoryAllocator_v14_2_1))
     {
-      *ppv = static_cast<IDeckLinkMemoryAllocator*>(this);
+      *ppv = static_cast<IDeckLinkMemoryAllocator_v14_2_1*>(this);
       AddRef();
       return S_OK;
     }
@@ -74,10 +79,11 @@ public:
       it->second.pop_back();
       return S_OK;
     }
-    const std::size_t rounded = ((bufferSize + kAlign - 1) / kAlign) * kAlign;
 #if defined(_WIN32)
-    void* p = _aligned_malloc(rounded, kAlign);
+    const std::size_t rounded = ((bufferSize + kWinRound - 1) / kWinRound) * kWinRound;
+    void* p = VirtualAlloc(nullptr, rounded, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 #else
+    const std::size_t rounded = ((bufferSize + kAlign - 1) / kAlign) * kAlign;
     void* p = std::aligned_alloc(kAlign, rounded);
 #endif
     if(!p)
@@ -105,7 +111,7 @@ public:
       for(void* p : bufs)
       {
 #if defined(_WIN32)
-        _aligned_free(p);
+        VirtualFree(p, 0, MEM_RELEASE);
 #else
         std::free(p);
 #endif
@@ -214,6 +220,7 @@ bool DeckLinkOutputBackend::open(score::gfx::GraphicsApi)
   // scheduled-playback clock restarts at 0 on StartScheduledPlayback, so the
   // display-time counter and the permit count both restart with it.
   drainPermits();
+  m_directPacing.store(false, std::memory_order_relaxed);
   m_frameCount = 0;
   m_started = false;
   m_quiesced = false;
@@ -293,11 +300,18 @@ bool DeckLinkOutputBackend::open(score::gfx::GraphicsApi)
   // allocator has already handed out unaligned memory.
   if(!qEnvironmentVariableIsSet("SCORE_DECKLINK_SDK_ALLOCATOR"))
   {
-    m_allocator = ComPtr<IDeckLinkMemoryAllocator>(new AlignedFrameAllocator);
-    if(m_output->SetVideoOutputFrameMemoryAllocator(m_allocator.get()) != S_OK)
+    ComPtr<IDeckLinkOutput_v14_2_1> legacyOut;
+    if(m_output->QueryInterface(IID_IDeckLinkOutput_v14_2_1, legacyOut.putVoid())
+           == S_OK
+       && legacyOut)
     {
-      qWarning() << "DeckLink: custom frame allocator refused; using the SDK's";
-      m_allocator.reset();
+      m_allocator
+          = ComPtr<IDeckLinkMemoryAllocator_v14_2_1>(new AlignedFrameAllocator);
+      if(legacyOut->SetVideoOutputFrameMemoryAllocator(m_allocator.get()) != S_OK)
+      {
+        qWarning() << "DeckLink: custom frame allocator refused; using the SDK's";
+        m_allocator.reset();
+      }
     }
   }
 
@@ -392,12 +406,14 @@ void DeckLinkOutputBackend::close()
     m_output->SetScheduledFrameCompletionCallback(nullptr);
     m_output->DisableVideoOutput();
   }
+  releaseAcquiredFrames();
   {
     std::lock_guard lock{m_poolMutex};
     m_free.clear();
     m_pool.clear(); // releases our refs; the driver's are gone after quiesce()
   }
   drainPermits();
+  m_directPacing.store(false, std::memory_order_relaxed);
   m_frameCount = 0;
   m_started = false;
   m_quiesced = false;
@@ -466,14 +482,100 @@ score::gfx::interop::PacedFramePump::Hooks DeckLinkOutputBackend::pacingHooks()
   h.waitForTick = [this] { return waitForTick(); };
   h.canAccept = {}; // back-pressure is the free-pool semaphore in waitForTick
   h.submit = [this](void* p) { return submitFrame(p); };
+  // Direct-readback frames the pump drops carry a pool slot + permit; staging
+  // ring pointers are not in m_acquired and pass through as a no-op.
+  h.discard = [this](void* p) { cancelFrameMemory(p); };
   return h;
+}
+
+score::gfx::interop::FrameMemoryProvider DeckLinkOutputBackend::frameMemoryProvider()
+{
+  score::gfx::interop::FrameMemoryProvider p;
+  p.acquire = [this] { return acquireFrameMemory(); };
+  p.cancel = [this](void* bytes) { cancelFrameMemory(bytes); };
+  return p;
+}
+
+void* DeckLinkOutputBackend::acquireFrameMemory()
+{
+  if(!m_output)
+    return nullptr;
+  // The permit is this frame's back-pressure: none free => the caller drops
+  // the render tick, exactly as waitForTick would have.
+  if(!m_freeSlots.try_acquire())
+    return nullptr;
+
+  IDeckLinkMutableVideoFrame* frame = nullptr;
+  {
+    std::lock_guard lock{m_poolMutex};
+    if(!m_free.empty())
+    {
+      frame = m_free.back();
+      m_free.pop_back();
+    }
+  }
+  if(!frame)
+  {
+    m_freeSlots.release();
+    return nullptr;
+  }
+
+  ComPtr<IDeckLinkVideoBuffer> buf;
+  if(frame->QueryInterface(IID_IDeckLinkVideoBuffer, buf.putVoid()) != S_OK
+     || !buf || buf->StartAccess(bmdBufferAccessWrite) != S_OK)
+  {
+    std::lock_guard lock{m_poolMutex};
+    m_free.push_back(frame);
+    m_freeSlots.release();
+    return nullptr;
+  }
+  void* bytes = nullptr;
+  if(buf->GetBytes(&bytes) != S_OK || !bytes)
+  {
+    buf->EndAccess(bmdBufferAccessWrite);
+    std::lock_guard lock{m_poolMutex};
+    m_free.push_back(frame);
+    m_freeSlots.release();
+    return nullptr;
+  }
+
+  {
+    std::lock_guard lock{m_poolMutex};
+    m_acquired.push_back({bytes, frame, std::move(buf)});
+  }
+  m_directPacing.store(true, std::memory_order_relaxed);
+  return bytes;
+}
+
+void DeckLinkOutputBackend::cancelFrameMemory(void* bytes)
+{
+  AcquiredFrame af;
+  {
+    std::lock_guard lock{m_poolMutex};
+    auto it = std::find_if(
+        m_acquired.begin(), m_acquired.end(),
+        [&](const AcquiredFrame& a) { return a.bytes == bytes; });
+    if(it == m_acquired.end())
+      return;
+    af = std::move(*it);
+    m_acquired.erase(it);
+  }
+  af.buf->EndAccess(bmdBufferAccessWrite);
+  {
+    std::lock_guard lock{m_poolMutex};
+    m_free.push_back(af.frame);
+  }
+  m_freeSlots.release();
 }
 
 bool DeckLinkOutputBackend::waitForTick()
 {
   // One permit == one free pool frame. The pump only calls this when a frame
   // is already pending, so a consumed permit is always followed by a submit
-  // (which returns it on failure); completions release new permits.
+  // (which returns it on failure); completions release new permits. In direct
+  // pacing the pending frame consumed its permit in acquireFrameMemory().
+  if(m_directPacing.load(std::memory_order_relaxed))
+    return true;
   return m_freeSlots.try_acquire_for(std::chrono::milliseconds(100));
 }
 
@@ -481,8 +583,33 @@ bool DeckLinkOutputBackend::submitFrame(void* framePtr)
 {
   if(!m_output || !framePtr)
   {
-    m_freeSlots.release(); // give back the permit from waitForTick
+    if(!m_directPacing.load(std::memory_order_relaxed))
+      m_freeSlots.release(); // give back the permit from waitForTick
     return false;
+  }
+
+  // Direct-readback frame: the GPU already wrote the pool frame's bytes -
+  // close the write access and schedule that very frame.
+  {
+    AcquiredFrame af;
+    bool found = false;
+    {
+      std::lock_guard lock{m_poolMutex};
+      auto it = std::find_if(
+          m_acquired.begin(), m_acquired.end(),
+          [&](const AcquiredFrame& a) { return a.bytes == framePtr; });
+      if(it != m_acquired.end())
+      {
+        af = std::move(*it);
+        m_acquired.erase(it);
+        found = true;
+      }
+    }
+    if(found)
+    {
+      af.buf->EndAccess(bmdBufferAccessWrite);
+      return scheduleFilledFrame(af.frame);
+    }
   }
 
   IDeckLinkMutableVideoFrame* frame = nullptr;
@@ -524,6 +651,11 @@ bool DeckLinkOutputBackend::submitFrame(void* framePtr)
   std::memcpy(dst, framePtr, m_frameByteSize);
   buf->EndAccess(bmdBufferAccessWrite);
 
+  return scheduleFilledFrame(frame);
+}
+
+bool DeckLinkOutputBackend::scheduleFilledFrame(IDeckLinkMutableVideoFrame* frame)
+{
   // Display-time resync. Times are absolute (frameCount * duration), so if the
   // producer ever falls behind the playback clock, every subsequent frame
   // would be scheduled in the past and completed "late/dropped" forever (the
@@ -611,6 +743,22 @@ void DeckLinkOutputBackend::drainPermits() noexcept
 {
   while(m_freeSlots.try_acquire())
     ;
+}
+
+void DeckLinkOutputBackend::releaseAcquiredFrames() noexcept
+{
+  std::vector<AcquiredFrame> acquired;
+  {
+    std::lock_guard lock{m_poolMutex};
+    acquired = std::move(m_acquired);
+    m_acquired.clear();
+  }
+  for(auto& af : acquired)
+  {
+    af.buf->EndAccess(bmdBufferAccessWrite);
+    std::lock_guard lock{m_poolMutex};
+    m_free.push_back(af.frame);
+  }
 }
 
 } // namespace Gfx::DeckLink
