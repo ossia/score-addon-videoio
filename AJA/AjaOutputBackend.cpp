@@ -286,7 +286,20 @@ score::gfx::interop::PacedFramePump::Hooks AjaOutputBackend::pacingHooks()
   h.waitForTick = [this] { return waitForVBI(); };
   h.canAccept = [this] { return cardCanAccept(); };
   h.submit = [this](void* p) { return submitFrame(p); };
+  // Direct-readback frames the pump drops go back to the pool; staging-ring
+  // and GPU-direct pointers are not pool-owned and pass through as a no-op.
+  h.discard = [this](void* p) { m_framePool.recycle(p); };
   return h;
+}
+
+score::gfx::interop::FrameMemoryProvider AjaOutputBackend::frameMemoryProvider()
+{
+  if(!m_deviceInitialized || m_frameBufferSize == 0)
+    return {};
+  if(!m_framePool.valid()
+     && !m_framePool.allocate(m_frameBufferSize, kFramePoolSize, registrar()))
+    return {};
+  return m_framePool.provider();
 }
 
 std::function<bool()> AjaOutputBackend::genlockTickSource()
@@ -376,13 +389,18 @@ bool AjaOutputBackend::submitFrame(void* framePtr)
   }
   ++m_outputFrame;
 
+  bool ok = true;
   {
     SCORE_STAGE_PROFILE(profAcXfer, "aja-out-ac-transfer");
-    if(!m_card->AutoCirculateTransfer(m_channel, m_xfer))
-    {
-      qWarning() << "AJA: AutoCirculateTransfer failed";
-      return false;
-    }
+    ok = m_card->AutoCirculateTransfer(m_channel, m_xfer);
+  }
+  // AutoCirculateTransfer DMAs synchronously: a direct-readback pool frame is
+  // reusable as soon as it returns, success or not.
+  m_framePool.recycle(framePtr);
+  if(!ok)
+  {
+    qWarning() << "AJA: AutoCirculateTransfer failed";
+    return false;
   }
   if(!m_acStarted && ++m_acGoodXfers >= 3)
   {
@@ -914,6 +932,11 @@ void AjaOutputBackend::shutdownAJADevice()
           << " level=" << st.GetBufferLevel();
   }
   m_card->AutoCirculateStop(m_channel);
+
+  // Direct-readback pool: unlock (via the still-open card) + free. The pump
+  // and the host-staged output are already torn down, so every frame is back
+  // in the pool.
+  m_framePool.release();
 
   // Drop HDR registers + ANC injection.
   if(m_card->features().CanDoHDMIHDROut())

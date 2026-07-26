@@ -15,6 +15,7 @@
 
 #include <AJA/AJAOutput.hpp>
 #include <Gfx/Graph/DirectVideoOutputBackend.hpp>
+#include <Gfx/Graph/interop/HostFramePool.hpp>
 
 #include <ntv2card.h>
 #include <ntv2enums.h>
@@ -63,6 +64,10 @@ public:
   std::vector<std::function<std::unique_ptr<score::gfx::interop::VideoOutputStrategy>()>>
   gpuDirectCandidates(QRhi* rhi, score::gfx::GraphicsApi api) override;
   score::gfx::interop::PacedFramePump::Hooks pacingHooks() override;
+  /// Direct-readback frame memory: a HostFramePool of DMABufferLock'd host
+  /// frames. AutoCirculateTransfer DMAs from any host pointer synchronously,
+  /// so submitFrame() recycles a pool frame the moment the transfer returns.
+  score::gfx::interop::FrameMemoryProvider frameMemoryProvider() override;
   std::function<bool()> genlockTickSource() override;
 
   /// Open the card + set the video standard, link/routing, VPID and HDR ANC.
@@ -133,6 +138,11 @@ private:
   AUTOCIRCULATE_TRANSFER m_xfer;
   uint32_t m_acGoodXfers{0};
   bool m_acStarted{false};
+
+  /// Direct-readback destination frames (frameMemoryProvider). Sized to cover
+  /// the render thread's pending frame + the pump ring + one in submit.
+  static constexpr int kFramePoolSize{5};
+  score::gfx::interop::HostFramePool m_framePool;
 };
 
 } // namespace Gfx::AJA
