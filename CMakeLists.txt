@@ -52,6 +52,11 @@ if(EXISTS "${VIDEOIO_AJA_SDK_ROOT}/ajantv2/includes/ntv2card.h")
     add_subdirectory("${VIDEOIO_AJA_SDK_ROOT}"
                      "${CMAKE_CURRENT_BINARY_DIR}/libajantv2"
                      EXCLUDE_FROM_ALL)
+    # The SDK declares its per-config options (-O0 -Wall in RelWithDebInfo /
+    # Debug) PUBLIC, so they propagate to every consumer and clash with the
+    # consumers' own flags (clang rejects a PCH built at a different -O level).
+    # Keep them for the SDK's own objects only.
+    set_target_properties(ajantv2 PROPERTIES INTERFACE_COMPILE_OPTIONS "")
   endif()
 
   list(APPEND VIDEOIO_HDRS
