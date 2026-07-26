@@ -70,6 +70,27 @@ void reportFormatClasses(NTV2DeviceID id)
       hd, uhdSingle, quad, quadQuad);
 }
 
+/// Every quad-quad format with the geometry NTV2FormatDescriptor reports for
+/// it. AJARoundtrip drops any format whose descriptor yields w<=0 or h<=0, so
+/// if the descriptor is empty here that is why 8K never reaches the matrix.
+void dumpQuadQuad(NTV2DeviceID id)
+{
+  std::printf("    quad-quad(8K) formats and their descriptor geometry:\n");
+  for(int i = 1; i < NTV2_MAX_NUM_VIDEO_FORMATS; ++i)
+  {
+    const auto fmt = static_cast<NTV2VideoFormat>(i);
+    if(!::NTV2DeviceCanDoVideoFormat(id, fmt) || !NTV2_IS_QUAD_QUAD_FORMAT(fmt))
+      continue;
+    NTV2FormatDescriptor fd(fmt, NTV2_FBF_8BIT_YCBCR);
+    std::printf(
+        "      %-28s raster %ux%u  visible-h %u  %s\n",
+        ::NTV2VideoFormatToString(fmt).c_str(), fd.GetRasterWidth(),
+        fd.GetFullRasterHeight(), fd.GetVisibleRasterHeight(),
+        (fd.GetRasterWidth() == 0 || fd.GetVisibleRasterHeight() == 0)
+            ? "<- DROPPED by the harness" : "");
+  }
+}
+
 void inspect(CNTV2Card& card, unsigned index)
 {
   const NTV2DeviceID cur = card.GetDeviceID();
@@ -82,6 +103,7 @@ void inspect(CNTV2Card& card, unsigned index)
       "    base id        : %s (0x%08x)\n", ::NTV2DeviceIDToString(base).c_str(),
       unsigned(base));
   reportFormatClasses(cur);
+  dumpQuadQuad(cur);
 
   const NTV2DeviceIDList loadable = card.GetDynamicDeviceList();
   std::printf("    loadable       :");
