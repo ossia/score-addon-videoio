@@ -304,7 +304,18 @@ private:
         // ingestFrame returns, the texture's bytes are consistent and
         // the renderer can sample on its next tick.
         if(!m_strategy->ingestFrame(writeIdx))
+        {
+          // Logged once: this repeats every VBI when it happens at all, and
+          // the symptom downstream is otherwise just stale/repeated frames.
+          if(!m_ingestFailed)
+          {
+            m_ingestFailed = true;
+            qWarning() << "AJA GPU input: ingestFrame failed on strategy"
+                       << m_strategy->name()
+                       << "- capture will publish no frames";
+          }
           continue;
+        }
 
         // Publish: bump frame id, store slot. Renderer polls.
         ++frameId;
@@ -320,6 +331,7 @@ private:
   score::gfx::interop::VideoCaptureStrategy* m_strategy{};
   score::gfx::interop::VideoCaptureSlotRing& m_ring;
   bool m_acStarted{false};
+  bool m_ingestFailed{false};
 
   std::thread m_thread;
   std::atomic<bool> m_running{false};
@@ -341,8 +353,21 @@ pickAjaCaptureStrategy(
   const QByteArray force = qgetenv("SCORE_AJA_FORCE_INTEROP");
   if(force == "cpu")
     return nullptr;
-  const bool allowDvp = force.isEmpty() || force == "dvp";
-  const bool allowRdma = force.isEmpty() || force == "rdma";
+  // SCORE_GFX_CAPTURE_STRATEGY names a rung of the generic capture ladder.
+  // It must gate selection here too: the generic pin check can only reject
+  // the single strategy this picker returns, so without this a pinned rung
+  // that is not the picker's first choice (RDMA under GL, where DVP wins)
+  // could never engage at all.
+  const QByteArray pin = qgetenv("SCORE_GFX_CAPTURE_STRATEGY").toLower();
+  const bool pinnedCpuRung
+      = pin == "cpu" || pin == "cpu-staging" || pin == "hostimport"
+        || pin == "uploadtexture";
+  if(pinnedCpuRung)
+    return nullptr;
+  const bool allowDvp = (force.isEmpty() || force == "dvp")
+                        && (pin.isEmpty() || pin == "dvp");
+  const bool allowRdma = (force.isEmpty() || force == "rdma")
+                         && (pin.isEmpty() || pin == "rdma");
 
   // DVP first: "GPUDirect for Video" needs no nvidia-peermem, so it works
   // on consumer GPUs where RDMA (DMABufferLock inRDMA=true) can't.
