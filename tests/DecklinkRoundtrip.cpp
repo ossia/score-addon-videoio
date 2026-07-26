@@ -468,6 +468,9 @@ struct Result
   /// measured — the mistake that invalidated four rounds of results.
   std::string rxStrategy = "-";
   bool rxPinUnmet = false;
+  /// Same accounting for the OUTPUT rung (SCORE_GFX_DIRECT_READBACK pin).
+  bool txPinUnmet = false;
+  bool txPinUnavailable = false;
   PhaseProfile profile;
 };
 
@@ -686,6 +689,8 @@ Result runCell(
 
   r.rxStrategy = rcv.engagedRx;
   r.rxPinUnmet = rcv.pinUnmet;
+  r.txPinUnmet = out->outputStrategyPinUnmet();
+  r.txPinUnavailable = out->outputStrategyPinUnavailable();
 
   VerifyMetrics& M = rcv.m;
   r.recv = M.frames.load();
@@ -738,9 +743,11 @@ Result runCell(
   // throughput measurement, and must not be reported as correctness.
   if(!usedCpuPattern && r.status == "PASS")
     r.status = "PERF-ONLY(no-index)";
-  if(r.rxPinUnmet)
+  if(r.rxPinUnmet || r.txPinUnmet)
     r.status = "FAIL(rung-not-engaged)";
-  else if(r.rxStrategy == "-" && r.status.rfind("SKIP", 0) != 0)
+  else if(
+      (r.rxStrategy == "-" || r.txPinUnavailable)
+      && r.status.rfind("SKIP", 0) != 0)
     r.status = "SKIP(rung-unavailable)";
 
   graph.reset();
