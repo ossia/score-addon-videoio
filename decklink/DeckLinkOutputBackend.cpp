@@ -92,6 +92,13 @@ public:
     *buffer = m_data;
     return m_data ? S_OK : E_OUTOFMEMORY;
   }
+  HRESULT STDMETHODCALLTYPE GetSize(ULONGLONG* size) override
+  {
+    if(!size)
+      return E_POINTER;
+    *size = m_size;
+    return S_OK;
+  }
   // Plain host memory is always accessible; access bracketing has nothing to
   // map or flush.
   HRESULT STDMETHODCALLTYPE StartAccess(BMDBufferAccessFlags) override
