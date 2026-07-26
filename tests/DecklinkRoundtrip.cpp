@@ -17,7 +17,9 @@
 #include <Gfx/Graph/BackgroundNode.hpp>
 #include <Gfx/Graph/Graph.hpp>
 #include <Gfx/Graph/RenderState.hpp>
+#include <Gfx/Graph/ISFNode.hpp>
 #include <Gfx/Graph/TexgenNode.hpp>
+#include <Gfx/ShaderProgram.hpp>
 
 #include <ossia/detail/pod_vector.hpp>
 
@@ -26,6 +28,7 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QEventLoop>
+#include <QFile>
 #include <QImage>
 #include <QTimer>
 
@@ -239,11 +242,26 @@ struct VerifyMetrics
     return !warm && (n % 8) == 0;
   }
 
+  /// Reference captured off the wire once, rather than re-derived on the CPU.
+  /// psnrGradient already ignores the index band, and the rest of the frame is
+  /// static, so the first good frame IS the reference: this verifies that the
+  /// transport preserved what we sent, instead of that it matches a CPU model
+  /// of what we believe we sent. It also works with any source shader, and
+  /// removes the standing hazard that the CPU model and the GPU pattern drift
+  /// apart while still "passing".
+  std::vector<uint8_t> refFrame;
+  int refW = 0, refH = 0;
+
   void recordPsnr(const uint8_t* rgba, int w, int h, int idx)
   {
-    std::vector<uint8_t> ref(size_t(w) * h * 4);
-    paint(ref.data(), w, h, idx);
-    const double p = psnrGradient(rgba, ref.data(), w, h);
+    if(refFrame.empty() || refW != w || refH != h)
+    {
+      refFrame.assign(rgba, rgba + size_t(w) * h * 4);
+      refW = w;
+      refH = h;
+      return; // nothing to compare the first frame against
+    }
+    const double p = psnrGradient(rgba, refFrame.data(), w, h);
     psnrSum = psnrSum.load() + p;
     psnrCount.fetch_add(1, std::memory_order_relaxed);
     double cur = psnrMin.load();
@@ -254,7 +272,7 @@ struct VerifyMetrics
     {
       QImage(rgba, w, h, QImage::Format_RGBA8888)
           .save(QString::fromStdString(dumpPrefix + "_recv.png"));
-      QImage(ref.data(), w, h, QImage::Format_RGBA8888)
+      QImage(refFrame.data(), w, h, QImage::Format_RGBA8888)
           .save(QString::fromStdString(dumpPrefix + "_ref.png"));
     }
   }
@@ -386,6 +404,37 @@ struct GpuReceiver
 // ---------------------------------------------------------------------------
 // Cells.
 // ---------------------------------------------------------------------------
+/// Source node for a cell. Default is a score ISFNode running an ISF shader on
+/// the GPU; --cpu-pattern falls back to the old TexgenNode, whose CPU paint
+/// measured 19.83 ms/frame at 2160p (63% of the send phase) plus a 33 MB upload
+/// per tick. Both are score graph nodes — the ISF one is the path score itself
+/// uses, so the harness stops exercising a source the product never has.
+score::gfx::Node* makeSourceNode(const QString& isfPath, bool cpuPattern)
+{
+  if(!cpuPattern && !isfPath.isEmpty())
+  {
+    QString frag;
+    if(QFile f{isfPath}; f.open(QIODevice::ReadOnly))
+      frag = QString::fromUtf8(f.readAll());
+    if(!frag.isEmpty())
+    {
+      const auto& [prog, err] = Gfx::ProgramCache::instance().get({QString{}, frag});
+      if(prog && err.isEmpty())
+        return new score::gfx::ISFNode(
+            prog->descriptor, prog->vertex, prog->fragment);
+      std::printf(
+          "ISF shader failed to compile: %s\n",
+          err.isEmpty() ? "(no program)" : err.toStdString().c_str());
+    }
+    else
+      std::printf("could not read ISF shader '%s'\n", isfPath.toStdString().c_str());
+    std::printf("falling back to the CPU pattern\n");
+  }
+  auto* t = new score::gfx::TexgenNode;
+  t->function = &g_paint;
+  return t;
+}
+
 struct VMode
 {
   BMDDisplayMode mode{};
@@ -431,6 +480,8 @@ struct Options
   std::vector<std::string> onlyPixfmts; // empty => all
   std::vector<std::string> onlyConns;   // empty => {sdi,hdmi}
   std::string dumpPrefix;
+  QString isfPath;
+  bool cpuPattern = false;
   bool list = false;
 };
 
@@ -566,8 +617,8 @@ Result runCell(
   inS.pixelFormat = pf.fmt;
   inS.connection = cn.conn;
 
-  auto* src = new score::gfx::TexgenNode;
-  src->function = &g_paint;
+  const bool usedCpuPattern = opt.cpuPattern || opt.isfPath.isEmpty();
+  auto* src = makeSourceNode(opt.isfPath, opt.cpuPattern);
   auto* out = new DeckLinkNode(outS);
 
   auto graph = std::make_unique<score::gfx::Graph>();
@@ -680,6 +731,13 @@ Result runCell(
 
   // A pinned rung that did not engage outranks every other verdict: the numbers
   // describe a different path than the one requested.
+  // The ISF sources available today paint a static pattern with no frame-index
+  // band, so idxFromRgba returns a constant: every frame equals the captured
+  // reference (PSNR 99), nothing advances (rep ~= recv) and no send timestamp
+  // exists (latency 0). Those are not passes — they are an unverified
+  // throughput measurement, and must not be reported as correctness.
+  if(!usedCpuPattern && r.status == "PASS")
+    r.status = "PERF-ONLY(no-index)";
   if(r.rxPinUnmet)
     r.status = "FAIL(rung-not-engaged)";
   else if(r.rxStrategy == "-" && r.status.rfind("SKIP", 0) != 0)
@@ -836,6 +894,13 @@ int main(int argc, char** argv)
   QCommandLineOption conns("conn", "Comma list of connectors: sdi,hdmi", "c");
   QCommandLineOption dump("dump", "Save first verified frame per cell", "prefix");
   QCommandLineOption list("list", "Print supported matrix and exit");
+  QCommandLineOption isf(
+      "isf",
+      "ISF shader to generate the test pattern on the GPU (a score ISFNode). "
+      "Without it the CPU TexgenNode is used, which costs ~20 ms/frame at 2160p.",
+      "path");
+  QCommandLineOption cpuPat(
+      "cpu-pattern", "Force the old CPU pattern source (for comparison)");
   QCommandLineOption apiOpt(
       "api", "Render backend: opengl | vulkan | d3d11 | d3d12", "api", "opengl");
   QCommandLineOption liveSwitch(
@@ -843,7 +908,8 @@ int main(int argc, char** argv)
       "Live input-resolution test: drive the output from mode A to mode B "
       "mid-stream with an Auto-detect capture; --modes A,B picks the pair "
       "(default 1080p5994,720p5994), --pixfmt picks the format.");
-  p.addOptions({secs, dev, modes, pfs, conns, dump, list, apiOpt, liveSwitch});
+  p.addOptions(
+      {secs, dev, modes, pfs, conns, dump, list, apiOpt, liveSwitch, isf, cpuPat});
   p.addHelpOption();
   p.process(*qApp);
 
@@ -868,6 +934,8 @@ int main(int argc, char** argv)
   opt.device = p.value(dev).toInt();
   opt.list = p.isSet(list);
   opt.dumpPrefix = p.value(dump).toStdString();
+  opt.isfPath = p.value(isf);
+  opt.cpuPattern = p.isSet(cpuPat);
   for(const auto& s : p.value(modes).split(',', Qt::SkipEmptyParts))
     opt.onlyModes.push_back(s.toStdString());
   for(const auto& s : p.value(pfs).split(',', Qt::SkipEmptyParts))
