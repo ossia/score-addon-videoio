@@ -88,7 +88,7 @@ public:
 #endif
     if(!p)
       return E_OUTOFMEMORY;
-    m_sizes[p] = bufferSize;
+    m_sizes[p] = {bufferSize, rounded};
     *allocatedBuffer = p;
     return S_OK;
   }
@@ -99,8 +99,26 @@ public:
       return S_OK;
     std::lock_guard lock{m_mutex};
     if(auto it = m_sizes.find(buffer); it != m_sizes.end())
-      m_free[it->second].push_back(buffer);
+      m_free[it->second.requested].push_back(buffer);
     return S_OK;
+  }
+
+  /// The allocation containing `p`. The SDK's video buffers hand out frame
+  /// pointers at an offset inside the buffer we allocated, and the GPU
+  /// readback needs the whole region to wrap it as a heap/import.
+  bool regionFor(const void* p, void*& base, std::size_t& bytes)
+  {
+    std::lock_guard lock{m_mutex};
+    auto it = m_sizes.upper_bound(const_cast<void*>(p));
+    if(it == m_sizes.begin())
+      return false;
+    --it;
+    const auto* b = static_cast<const char*>(it->first);
+    if(static_cast<const char*>(p) >= b + it->second.rounded)
+      return false;
+    base = it->first;
+    bytes = it->second.rounded;
+    return true;
   }
 
   HRESULT STDMETHODCALLTYPE Commit() override { return S_OK; }
@@ -122,9 +140,14 @@ public:
   }
 
 private:
+  struct Sizes
+  {
+    unsigned int requested{};
+    std::size_t rounded{};
+  };
   std::atomic<ULONG> m_ref{1};
   std::mutex m_mutex;
-  std::map<void*, unsigned int> m_sizes;
+  std::map<void*, Sizes> m_sizes;
   std::map<unsigned int, std::vector<void*>> m_free;
 };
 } // namespace
@@ -305,12 +328,20 @@ bool DeckLinkOutputBackend::open(score::gfx::GraphicsApi)
            == S_OK
        && legacyOut)
     {
-      m_allocator
-          = ComPtr<IDeckLinkMemoryAllocator_v14_2_1>(new AlignedFrameAllocator);
+      auto* alloc = new AlignedFrameAllocator;
+      m_allocator = ComPtr<IDeckLinkMemoryAllocator_v14_2_1>(alloc);
       if(legacyOut->SetVideoOutputFrameMemoryAllocator(m_allocator.get()) != S_OK)
       {
         qWarning() << "DeckLink: custom frame allocator refused; using the SDK's";
         m_allocator.reset();
+      }
+      else
+      {
+        // The lambda captures the raw allocator; cleared in close() before
+        // m_allocator drops its reference.
+        m_regionLookup = [alloc](const void* p, void*& base, std::size_t& bytes) {
+          return alloc->regionFor(p, base, bytes);
+        };
       }
     }
     else
@@ -423,6 +454,8 @@ void DeckLinkOutputBackend::close()
   m_started = false;
   m_quiesced = false;
   m_callback.reset();
+  m_regionLookup = {};
+  m_allocator.reset();
   m_output.reset();
   m_device.reset();
   m_open = false;
@@ -501,14 +534,14 @@ score::gfx::interop::FrameMemoryProvider DeckLinkOutputBackend::frameMemoryProvi
   return p;
 }
 
-void* DeckLinkOutputBackend::acquireFrameMemory()
+score::gfx::interop::VendorFrameMemory DeckLinkOutputBackend::acquireFrameMemory()
 {
-  if(!m_output)
-    return nullptr;
+  if(!m_output || !m_regionLookup)
+    return {};
   // The permit is this frame's back-pressure: none free => the caller drops
   // the render tick, exactly as waitForTick would have.
   if(!m_freeSlots.try_acquire())
-    return nullptr;
+    return {};
 
   IDeckLinkMutableVideoFrame* frame = nullptr;
   {
@@ -522,7 +555,7 @@ void* DeckLinkOutputBackend::acquireFrameMemory()
   if(!frame)
   {
     m_freeSlots.release();
-    return nullptr;
+    return {};
   }
 
   ComPtr<IDeckLinkVideoBuffer> buf;
@@ -532,24 +565,30 @@ void* DeckLinkOutputBackend::acquireFrameMemory()
     std::lock_guard lock{m_poolMutex};
     m_free.push_back(frame);
     m_freeSlots.release();
-    return nullptr;
+    return {};
   }
   void* bytes = nullptr;
-  if(buf->GetBytes(&bytes) != S_OK || !bytes)
+  score::gfx::interop::VendorFrameMemory mem;
+  if(buf->GetBytes(&bytes) != S_OK || !bytes
+     || !m_regionLookup(bytes, mem.regionBase, mem.regionBytes))
   {
+    if(bytes)
+      qWarning() << "DeckLink: frame bytes" << bytes
+                 << "are not from our allocator - direct readback unavailable";
     buf->EndAccess(bmdBufferAccessWrite);
     std::lock_guard lock{m_poolMutex};
     m_free.push_back(frame);
     m_freeSlots.release();
-    return nullptr;
+    return {};
   }
+  mem.bytes = bytes;
 
   {
     std::lock_guard lock{m_poolMutex};
     m_acquired.push_back({bytes, frame, std::move(buf)});
   }
   m_directPacing.store(true, std::memory_order_relaxed);
-  return bytes;
+  return mem;
 }
 
 void DeckLinkOutputBackend::cancelFrameMemory(void* bytes)
