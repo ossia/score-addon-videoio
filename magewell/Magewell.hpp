@@ -49,6 +49,9 @@ inline unsigned char* mwBufferAddress(unsigned char* p) noexcept
 {
   return p;
 }
+/// Device-path character type: MWGetDevicePath / MWOpenChannelByPath take
+/// WCHAR* on Windows and char* on Linux.
+using MwPathChar = WCHAR;
 } // namespace Gfx::Magewell
 
 #else
@@ -116,6 +119,9 @@ inline MWCAP_PTR mwBufferAddress(unsigned char* p) noexcept
 {
   return MWCAP_PTR(reinterpret_cast<uintptr_t>(p));
 }
+/// Device-path character type: MWGetDevicePath / MWOpenChannelByPath take
+/// WCHAR* on Windows and char* on Linux.
+using MwPathChar = char;
 } // namespace Gfx::Magewell
 
 #endif

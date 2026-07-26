@@ -42,11 +42,7 @@ bool MagewellInputBackend::open()
 
   // Resolve the channel index to a device path, then open the channel.
   // (UTF-16 on Windows, plain char on Linux — the SDK signature differs.)
-#if defined(_WIN32)
-  WCHAR path[256] = {0};
-#else
-  char path[256] = {0};
-#endif
+  MwPathChar path[256] = {0};
   if(MWGetDevicePath(m_settings.deviceIndex, path) != MW_SUCCEEDED)
   {
     qWarning() << "Magewell input: MWGetDevicePath failed for channel"

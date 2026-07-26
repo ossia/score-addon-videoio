@@ -372,7 +372,7 @@ bool DeckLinkInputBackend::open()
   m_enableFlags = bmdVideoInputFlagDefault;
   {
     ComPtr<IDeckLinkProfileAttributes> attrs;
-    bool detect = false;
+    dlbool_t detect = false;
     if(m_device->QueryInterface(IID_IDeckLinkProfileAttributes, attrs.putVoid())
            == S_OK
        && attrs

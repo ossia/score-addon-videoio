@@ -67,7 +67,7 @@ bool signalLocked(int index) noexcept
   if(!ensureMwInit())
     return false;
 
-  char path[256]{};
+  MwPathChar path[256]{};
   if(MWGetDevicePath(index, path) != MW_SUCCEEDED)
     return false;
   HCHANNEL h = MWOpenChannelByPath(path);

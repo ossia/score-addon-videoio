@@ -13,6 +13,10 @@
 #include <windows.h>
 
 #include "DeckLinkAPI_h.h"
+
+// IDeckLinkProfileAttributes::GetFlag takes BOOL* (int*) on Windows but bool*
+// on Linux, so call sites need a type that follows the platform.
+using dlbool_t = BOOL;
 #else
 #include <DeckLinkAPI.h>
 
@@ -22,6 +26,7 @@
 // The Linux SDK's LinuxCOM.h provides HRESULT/REFIID but not the Windows
 // helper types/functions the shared backend code uses.
 using LONGLONG = int64_t;
+using dlbool_t = bool;
 
 inline bool IsEqualIID(REFIID a, REFIID b) noexcept
 {
