@@ -193,6 +193,7 @@ struct Stat
 struct VerifyMetrics
 {
   std::atomic<int> frames{0};
+  std::atomic<int> postWarmFrames{0};
   std::atomic<int> gaps{0};
   std::atomic<int> repeats{0};
   std::atomic<int> psnrCount{0};
@@ -222,6 +223,8 @@ struct VerifyMetrics
   {
     const int n = frames.fetch_add(1, std::memory_order_relaxed) + 1;
     const bool warm = (recvNs - startNs) < warmupNs;
+    if(!warm)
+      postWarmFrames.fetch_add(1, std::memory_order_relaxed);
     if(idx < 0)
       return false;
     if(!warm && lastIdx >= 0)
@@ -735,8 +738,13 @@ Result runCell(
       r.status = "SKIP(no-lock)";
     // A capture that never advances its frame index delivered nothing at all
     // (dead connector, unplugged loopback, wedged DMA). Saying "psnr" there
-    // sends the reader hunting for a colour-conversion bug instead.
-    else if(r.recv > 2 && r.repeats >= r.recv - 2)
+    // sends the reader hunting for a colour-conversion bug instead. Repeats
+    // are only counted after warmup, so compare against the post-warmup frame
+    // count: against the raw total, a long-warmup (UHD) cell could freeze
+    // completely and still slip past this guard as a PSNR-99 PASS.
+    else if(
+        const int postWarm = M.postWarmFrames.load();
+        postWarm > 2 && r.repeats >= postWarm - 2)
       r.status = "FAIL(no-capture)";
     else if(r.minPsnr < pf.psnrThreshold)
       r.status = (rgbRequested && r.minPsnr >= 15.0) ? "SKIP(rgb-wire-degraded)"
