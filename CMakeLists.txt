@@ -413,6 +413,15 @@ setup_score_plugin(${PROJECT_NAME})
 # set + real hardware. Drives the real output path and CPU-staging capture.
 option(SCORE_VIDEOIO_BUILD_TESTS "Build the Direct Video I/O (AJA) test harness" OFF)
 if(SCORE_VIDEOIO_BUILD_TESTS AND VIDEOIO_HAS_AJA)
+  # Personality inspector/switcher: pure ajantv2, no score/Qt dependency, so it
+  # stays usable when the graph stack is mid-rebuild.
+  add_executable(AJAPersonality tests/AJAPersonality.cpp)
+  target_include_directories(AJAPersonality PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${VIDEOIO_AJA_SDK_ROOT}/ajantv2/includes"
+    "${VIDEOIO_AJA_SDK_ROOT}")
+  target_link_libraries(AJAPersonality PRIVATE ajantv2)
+
   add_executable(AJARoundtrip tests/AJARoundtrip.cpp)
   target_include_directories(AJARoundtrip PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
