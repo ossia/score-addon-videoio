@@ -17,6 +17,9 @@
 // IDeckLinkProfileAttributes::GetFlag takes BOOL* (int*) on Windows but bool*
 // on Linux, so call sites need a type that follows the platform.
 using dlbool_t = BOOL;
+// IDeckLinkVideoBuffer::GetSize takes ULONGLONG* on Windows, uint64_t* on
+// Linux — same width, distinct types, so an override must follow the platform.
+using dlbuffersize_t = ULONGLONG;
 #else
 #include <DeckLinkAPI.h>
 
@@ -27,6 +30,7 @@ using dlbool_t = BOOL;
 // helper types/functions the shared backend code uses.
 using LONGLONG = int64_t;
 using dlbool_t = bool;
+using dlbuffersize_t = uint64_t;
 
 inline bool IsEqualIID(REFIID a, REFIID b) noexcept
 {

@@ -92,7 +92,7 @@ public:
     *buffer = m_data;
     return m_data ? S_OK : E_OUTOFMEMORY;
   }
-  HRESULT STDMETHODCALLTYPE GetSize(ULONGLONG* size) override
+  HRESULT STDMETHODCALLTYPE GetSize(dlbuffersize_t* size) override
   {
     if(!size)
       return E_POINTER;
