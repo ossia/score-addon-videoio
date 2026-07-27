@@ -97,6 +97,26 @@ else()
   message(STATUS "score-addon-videoio: AJA disabled (submodule 3rdparty/libajantv2 not checked out)")
 endif()
 
+# --- V4L2 (Linux, kernel API only: no SDK, no library to find) --------------
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  list(APPEND VIDEOIO_HDRS
+    "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2Session.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2CpuCapture.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2InputBackend.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2CaptureNode.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2GbmAllocator.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2NvBufAllocator.hpp")
+  list(APPEND VIDEOIO_SRCS
+    "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2Session.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2InputBackend.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2CaptureNode.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2GbmAllocator.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2NvBufAllocator.cpp")
+  list(APPEND VIDEOIO_DEFS SCORE_HAS_V4L2=1)
+  set(VIDEOIO_HAS_V4L2 TRUE)
+  message(STATUS "score-addon-videoio: V4L2 enabled")
+endif()
+
 # --- Blackmagic DeckLink -----------------------------------------------------
 # Windows + clang64: the SDK ships only .idl (MS MIDL input); we generate the
 # COM C++ header + IID source with MinGW's widl at build time.

@@ -48,6 +48,11 @@
 #include <bluefish/BluefishSettings.hpp>
 #endif
 
+#if defined(SCORE_HAS_V4L2)
+#include <v4l2/V4L2CaptureNode.hpp>
+#include <v4l2/V4L2Session.hpp>
+#endif
+
 #if defined(SCORE_HAS_MAGEWELL)
 #include <magewell/MagewellCaptureNode.hpp>
 #include <magewell/MagewellDevices.hpp>
@@ -332,6 +337,24 @@ bool VideoInputDevice::reconnect()
 #endif
         break;
       }
+      case Vendor::V4L2:
+      {
+#if defined(SCORE_HAS_V4L2)
+        Gfx::V4L2::V4L2InputSettings v4l2;
+        // deviceName carries the node path (/dev/videoN); the index is only a
+        // fallback for settings saved before a path was recorded.
+        v4l2.device = set.deviceName.isEmpty()
+                          ? ("/dev/video" + std::to_string(set.deviceIndex))
+                          : set.deviceName.toStdString();
+        registerGpuDirect(new Gfx::V4L2::V4L2CaptureNode{v4l2});
+        qDebug() << "Direct Video Input: V4L2 host-staged node";
+        return connected();
+#else
+        qDebug() << "Direct Video Input: V4L2 not compiled in";
+        return false;
+#endif
+        break;
+      }
       case Vendor::Magewell:
       {
 #if defined(SCORE_HAS_MAGEWELL)
@@ -383,6 +406,9 @@ VideoInputSettingsWidget::VideoInputSettingsWidget(QWidget* parent)
 #endif
 #if defined(SCORE_HAS_BLUEFISH)
   m_vendorCombo->addItem("Bluefish444", static_cast<int>(Vendor::Bluefish));
+#endif
+#if defined(SCORE_HAS_V4L2)
+  m_vendorCombo->addItem("V4L2 (Linux)", static_cast<int>(Vendor::V4L2));
 #endif
 #if defined(SCORE_HAS_MAGEWELL)
   m_vendorCombo->addItem("Magewell", static_cast<int>(Vendor::Magewell));
@@ -520,6 +546,18 @@ void VideoInputSettingsWidget::refreshDeviceList()
       if(dev.canInput)
         m_deviceCombo->addItem(
             QString::fromStdString(dev.displayName), dev.index);
+  }
+#endif
+#if defined(SCORE_HAS_V4L2)
+  else if(vendor == Vendor::V4L2)
+  {
+    // The node path is the identity here, not an index: a single USB camera
+    // exposes several /dev/videoN and only some of them capture.
+    for(const auto& dev : Gfx::V4L2::enumerateDevices())
+      if(dev.canCapture)
+        m_deviceCombo->addItem(
+            QString::fromStdString(dev.card + " (" + dev.path + ")"),
+            QString::fromStdString(dev.path));
   }
 #endif
 #if defined(SCORE_HAS_BLUEFISH)
@@ -742,6 +780,33 @@ public:
 };
 #endif
 
+#if defined(SCORE_HAS_V4L2)
+class V4L2VideoInputEnumerator final : public Device::DeviceEnumerator
+{
+public:
+  void enumerate(
+      std::function<void(const QString&, const Device::DeviceSettings&)> func)
+      const override
+  {
+    for(const auto& dev : Gfx::V4L2::enumerateDevices())
+    {
+      if(!dev.canCapture)
+        continue;
+      Device::DeviceSettings s;
+      // The card name alone is ambiguous (a UVC camera exposes several nodes),
+      // so the path is part of the label.
+      s.name = QString::fromStdString(dev.card + " (" + dev.path + ")");
+      s.protocol = VideoInputProtocolFactory::static_concreteKey();
+      VideoInputSettings set;
+      set.vendor = Vendor::V4L2;
+      set.deviceName = QString::fromStdString(dev.path);
+      s.deviceSpecificSettings = QVariant::fromValue(set);
+      func(s.name, s);
+    }
+  }
+};
+#endif
+
 #if defined(SCORE_HAS_MAGEWELL)
 class MagewellVideoInputEnumerator final : public Device::DeviceEnumerator
 {
@@ -788,6 +853,9 @@ VideoInputProtocolFactory::getEnumerators(const score::DocumentContext&) const
 #endif
 #if defined(SCORE_HAS_MAGEWELL)
   e.push_back({"Magewell", new MagewellVideoInputEnumerator});
+#endif
+#if defined(SCORE_HAS_V4L2)
+  e.push_back({"V4L2", new V4L2VideoInputEnumerator});
 #endif
   return e;
 }
