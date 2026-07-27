@@ -37,6 +37,15 @@ VideoPixelFormat neutralFromV4L2Fourcc(std::uint32_t f) noexcept
       return VideoPixelFormat::BGRA8;
     case V4L2_PIX_FMT_RGBA32: // V4L2 "AB24": R,G,B,A in memory
       return VideoPixelFormat::RGBA8;
+    // Single-channel sensors: greyscale industrial cameras and depth streams.
+    // Z16 is 16-bit depth; decoded as mono luminance it is the wire format
+    // rendered faithfully, which is what this layer is responsible for --
+    // interpreting the values as distance is a separate concern.
+    case V4L2_PIX_FMT_GREY:
+      return VideoPixelFormat::Mono8;
+    case V4L2_PIX_FMT_Y16:
+    case V4L2_PIX_FMT_Z16:
+      return VideoPixelFormat::Mono16;
     case V4L2_PIX_FMT_BGR24:
       return VideoPixelFormat::BGR24;
     case V4L2_PIX_FMT_RGB24:

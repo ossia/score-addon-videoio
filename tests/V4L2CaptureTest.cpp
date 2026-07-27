@@ -419,6 +419,11 @@ double psnrRgba(const std::uint8_t* a, const std::uint8_t* b, int w, int h)
   return 10.0 * std::log10(255.0 * 255.0 / mse);
 }
 
+// A broken pipeline shows a frozen solid colour: no spatial variation between
+// sampled points and no temporal variation between frames. A low mean luma on
+// its own is not evidence of that -- depth formats (V4L2 Z16 is millimetres in
+// a 16-bit container, so a 1 m scene sits at ~1.5% of full scale) decode
+// correctly to a near-black but structured image, and used to fail here.
 struct RenderCell
 {
   std::string device, pin;
@@ -438,6 +443,11 @@ struct RenderCell
   std::string verdict = "SKIP";
   bool pass{};
 };
+
+inline bool degenerate(const RenderCell& c)
+{
+  return c.uniform || (c.meanLuma < 4.0 && c.distinct == 0);
+}
 
 /// One renderer run. Every rendered frame is compared against @p golden; when
 /// that is empty the run's own first stable frame becomes the reference, which
@@ -752,7 +762,7 @@ int main(int argc, char** argv)
       ref.verdict = "SKIP(format-not-decodable)";
     else if(ref.frames == 0)
       ref.verdict = "FAIL(no-frames)";
-    else if(ref.meanLuma < 4.0 || ref.uniform)
+    else if(degenerate(ref))
       ref.verdict = "FAIL(black-or-uniform)";
     else
     {
@@ -778,7 +788,7 @@ int main(int argc, char** argv)
       gpu.verdict = "SKIP(no-dmabuf-import: " + gpu.engaged + ")";
     else if(gpu.frames == 0)
       gpu.verdict = "FAIL(no-frames)";
-    else if(gpu.meanLuma < 4.0 || gpu.uniform)
+    else if(degenerate(gpu))
       gpu.verdict = "FAIL(black-or-uniform)";
     else if(comparable && gpu.minPsnr < floorPsnr)
       gpu.verdict = "FAIL(content-mismatch)";
