@@ -489,3 +489,19 @@ if(SCORE_VIDEOIO_BUILD_TESTS AND VIDEOIO_HAS_MAGEWELL)
     target_link_libraries(MagewellCaptureTest PRIVATE ${SCORE_PLUGINS_LIST})
   endif()
 endif()
+
+# --- V4L2 capture validation (Linux, no GPU or Qt dependency) -----------------
+if(SCORE_VIDEOIO_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(V4L2CaptureTest
+    tests/V4L2CaptureTest.cpp
+    tests/V4L2DonorAllocator.cpp
+    v4l2/V4L2Session.cpp
+    v4l2/V4L2GbmAllocator.cpp)
+  target_include_directories(V4L2CaptureTest PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_BINARY_DIR}"
+    ${VIDEOIO_INCS})
+  target_link_libraries(V4L2CaptureTest PRIVATE
+    score_plugin_gfx
+    ${QT_PREFIX}::Core ${QT_PREFIX}::Gui)
+endif()
