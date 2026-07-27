@@ -204,6 +204,12 @@ public:
   /// Last failing ioctl, for honest reporting up the rung ladder.
   const std::string& lastError() const noexcept;
 
+  /// True when the last failure was the driver not implementing the ioctl at
+  /// all (ENOTTY), which is "this mode does not exist here" rather than "this
+  /// mode broke" -- ProCapture answers VIDIOC_EXPBUF that way. Callers should
+  /// report it as unavailable, not as an error.
+  bool lastErrorUnsupported() const noexcept;
+
 private:
   struct Impl;
   std::unique_ptr<Impl> d;

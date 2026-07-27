@@ -51,6 +51,11 @@ const char* toString(BufferMode m) noexcept
 
 BufferMode BufferCaps::preferred() const noexcept
 {
+  // Without driver-stated capabilities the only safe claim is plain MMAP:
+  // ProCapture grants MMAP buffers but has no VIDIOC_EXPBUF at all, so
+  // inferring MmapExport from "mmap works" picks a mode that cannot start.
+  if(!reportsCaps)
+    return BufferMode::MmapRead;
   if(dmabuf)
     return BufferMode::DmaBufImport;
   if(mmap)
@@ -82,8 +87,11 @@ struct Session::Impl
   std::uint64_t lastSequence{};
   bool haveSequence{};
 
+  int lastErrno{};
+
   bool fail(const char* what) noexcept
   {
+    lastErrno = errno;
     lastError = std::string(what) + ": " + ::strerror(errno);
     return false;
   }
@@ -259,6 +267,11 @@ std::uint64_t Session::droppedFrames() const noexcept
 const std::string& Session::lastError() const noexcept
 {
   return d->lastError;
+}
+
+bool Session::lastErrorUnsupported() const noexcept
+{
+  return d->lastErrno == ENOTTY;
 }
 
 bool Session::open(const std::string& p)

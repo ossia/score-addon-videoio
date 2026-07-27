@@ -253,6 +253,14 @@ Result runCell(
                   + fourccStr(fmt.fourcc) + "]";
       return r;
     }
+    // ENOTTY is the driver saying the ioctl does not exist here at all --
+    // ProCapture answers VIDIOC_EXPBUF that way -- which is an absent rung,
+    // not a broken one.
+    if(s.lastErrorUnsupported())
+    {
+      r.verdict = "SKIP(mode-unavailable)";
+      return r;
+    }
     char buf[160];
     std::snprintf(
         buf, sizeof(buf), "FAIL(start) [%ux%u %s stride=%u size=%u x%d]: %s",
