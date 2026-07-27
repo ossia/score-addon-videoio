@@ -273,6 +273,21 @@ void MagewellInputBackend::runLoop()
     if(!(ullStatusBits & MWCAP_NOTIFY_VIDEO_FRAME_BUFFERED))
       continue;
 
+    // Live resolution change: the card auto-adapts, so if it now reports a
+    // different geometry, publish it for the render thread to rebuild at the
+    // new size and stop feeding new-size frames into the old-size slots. The
+    // rebuild recreates this backend; its open() re-reads the current cx/cy.
+    if(MWCAP_VIDEO_SIGNAL_STATUS st{};
+       MWGetVideoSignalStatus(m_channel, &st) == MW_SUCCEEDED
+       && st.state == MWCAP_VIDEO_SIGNAL_LOCKED
+       && (st.cx != m_width || st.cy != m_height))
+    {
+      const double fps
+          = st.dwFrameDuration ? 10000000.0 / st.dwFrameDuration : 0.0;
+      m_ring.publishFormat(st.cx, st.cy, -1, fps);
+      continue;
+    }
+
     MWCAP_VIDEO_BUFFER_INFO binfo{};
     if(MWGetVideoBufferInfo(m_channel, &binfo) != MW_SUCCEEDED)
       continue;

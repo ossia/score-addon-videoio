@@ -310,6 +310,22 @@ void DeltacastInputBackend::runLoop()
       }
     }
     VHD_UnlockSlotHandle(slot);
+
+    // Live input standard change: re-poll and publish the new geometry so the
+    // render thread rebuilds; open() re-detects the standard on re-open.
+    ULONG live = 0;
+    if(VHD_GetStreamProperty(m_stream, VHD_SDI_SP_VIDEO_STANDARD, &live)
+           == VHDERR_NOERROR
+       && live != NB_VHD_VIDEOSTANDARDS
+       && live != static_cast<ULONG>(m_settings.videoStandard))
+    {
+      ULONG nw = 0, nh = 0, nfr = 0;
+      BOOL32 il = FALSE;
+      VHD_GetVideoCharacteristics(
+          static_cast<VHD_VIDEOSTANDARD>(live), &nw, &nh, &il, &nfr);
+      if(nw > 0 && nh > 0)
+        m_ring.publishFormat(int(nw), int(nh), -1, 0.0);
+    }
   }
 }
 

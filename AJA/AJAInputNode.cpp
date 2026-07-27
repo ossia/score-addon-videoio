@@ -241,24 +241,17 @@ private:
         sinceLastPoll = 0;
         if(m_session.detectAndApplyFormatChange())
         {
-          // After a reroute, the AC ring is stale. The strategy's
-          // sysmem slots are sized to the OLD geometry, though, so we
-          // can't safely DMA into them anymore. Until the strategy
-          // gains a "rebind to new geometry" hook, we just stop
-          // ingesting on this loop iteration; the user must redock
-          // the device to pick up the new format on the GPU side.
-          // The CPU-staging path doesn't have this limitation since
-          // each AVFrame is sized independently.
-          qWarning() << "AJA GPU input: format change detected; "
-                        "GPU-direct strategy needs a redock to resize.";
+          // The session applied the new wire format; its slots are sized to
+          // the OLD geometry so we can no longer DMA into them. Publish the
+          // new geometry for the render thread to rebuild (release()+init()
+          // re-opens this backend at the current wire format) and stop
+          // AutoCirculate so nothing writes mismatched-geometry buffers.
           if(m_acStarted)
           {
             card->AutoCirculateStop(ch);
             m_acStarted = false;
           }
-          // Stop the loop — the renderer will see no new frames.
-          // We can't continue producing into mismatched-geometry
-          // sysmem buffers.
+          m_ring.publishFormat(m_session.width(), m_session.height(), -1, 0.0);
           break;
         }
       }

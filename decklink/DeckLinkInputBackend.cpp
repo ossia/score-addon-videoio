@@ -149,6 +149,15 @@ public:
       }
       return S_OK;
     }
+    // Auto mode: a genuine resolution change is adopted, not re-armed. Publish
+    // the new geometry so the render thread rebuilds its GPU resources at the
+    // new size; its fresh open() re-reads the now-current detected mode.
+    if(m_inputSettings.autoDetect && modeDiffers && newMode)
+    {
+      m_ring.publishFormat(
+          int(newMode->GetWidth()), int(newMode->GetHeight()), -1, 0.0);
+      return S_OK;
+    }
     if(modeDiffers || colorDiffers)
     {
       if(colorDiffers)
@@ -313,6 +322,22 @@ bool DeckLinkInputBackend::open()
         qWarning() << "DeckLink input: could not select input connection"
                    << int64_t(m_settings.connection);
     }
+  }
+
+  // Auto mode: adopt whatever the wire currently carries. IDeckLinkStatus
+  // reports the live detected input mode synchronously, so a fresh open() —
+  // including the render thread's rebuild after a live resolution change —
+  // opens at the current geometry instead of the fixed configured one.
+  if(m_settings.autoDetect)
+  {
+    ComPtr<IDeckLinkStatus> status;
+    int64_t detected = 0;
+    if(m_device->QueryInterface(IID_IDeckLinkStatus, status.putVoid()) == S_OK
+       && status
+       && status->GetInt(bmdDeckLinkStatusDetectedVideoInputMode, &detected)
+              == S_OK
+       && detected != 0)
+      m_settings.displayMode = BMDDisplayMode(detected);
   }
 
   ComPtr<IDeckLinkDisplayModeIterator> modeIt;
