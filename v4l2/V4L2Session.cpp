@@ -31,6 +31,8 @@ int xioctl(int fd, unsigned long req, void* arg) noexcept
 
 constexpr std::size_t kMaxPlanes = 4;
 constexpr std::size_t kMaxSlots = 32;
+/// How many consecutive error-flagged buffers to skip before giving up.
+constexpr int kMaxErrorSkips = 8;
 } // namespace
 
 const char* toString(BufferMode m) noexcept
@@ -581,6 +583,15 @@ int Session::dequeue(int timeoutMs)
   if(d->fd < 0 || !d->streaming)
     return -2;
 
+  // A buffer flagged V4L2_BUF_FLAG_ERROR holds no usable payload -- uvcvideo
+  // raises it for the incomplete first frame of almost every stream, and for
+  // any frame that lost USB packets. Handing it on renders corruption, so it
+  // is returned to the driver and the next one is taken. Bounded, because a
+  // source producing nothing but errors must surface as a timeout rather than
+  // spin here.
+  for(int attempt = 0; attempt < kMaxErrorSkips; ++attempt)
+  {
+
   pollfd pfd{};
   pfd.fd = d->fd;
   pfd.events = POLLIN;
@@ -637,7 +648,12 @@ int Session::dequeue(int timeoutMs)
                   + static_cast<std::uint64_t>(buf.timestamp.tv_usec) * 1000ull;
 
   if(buf.flags & V4L2_BUF_FLAG_ERROR)
+  {
     d->errFrames++;
+    d->slots[idx].bytesUsed = 0;
+    requeue(idx);
+    continue;
+  }
 
   // A jump in the driver's sequence counter is the only reliable signal that
   // frames were produced but never reached us.
@@ -647,6 +663,12 @@ int Session::dequeue(int timeoutMs)
   d->haveSequence = true;
 
   return static_cast<int>(idx);
+
+  } // retry loop
+
+  // Every attempt produced an error-flagged buffer.
+  d->lastError = "only error-flagged buffers received";
+  return -1;
 }
 
 bool Session::requeue(std::size_t index)

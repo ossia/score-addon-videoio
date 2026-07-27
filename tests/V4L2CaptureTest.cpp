@@ -336,12 +336,16 @@ Result runCell(
 
   if(!sawContent)
     r.verdict = "FAIL(no-content)";
-  else if(r.errors > 0)
-    r.verdict = "FAIL(error-frames)";
+  else if(r.errors > 0 && r.errors * 10 > std::uint64_t(r.frames))
+    // Error-flagged buffers are skipped by the session rather than delivered,
+    // so a few are handled, not failures: uvcvideo flags the incomplete first
+    // frame of nearly every stream. A sustained rate is a different matter --
+    // above 10% the source is not delivering usable video.
+    r.verdict = "FAIL(error-rate)";
   else
   {
     r.pass = true;
-    r.verdict = "PASS";
+    r.verdict = r.errors > 0 ? "PASS(skipped-err)" : "PASS";
   }
   return r;
 }
