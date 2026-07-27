@@ -198,6 +198,11 @@ struct VerifyMetrics
   std::atomic<int> postWarmFrames{0};
   std::atomic<int> gaps{0};
   std::atomic<int> repeats{0};
+  /// Distinct post-warmup index values seen. A source whose band really
+  /// advances produces many; a static pattern produces exactly one. Observing
+  /// this beats assuming it from which source node was chosen -- any shader
+  /// can carry the band (ISF exposes FRAMEINDEX), and any can omit it.
+  std::atomic<std::uint64_t> idxSeenMask{0};
   std::atomic<int> psnrCount{0};
   std::atomic<double> psnrSum{0};
   std::atomic<double> psnrMin{99.0};
@@ -215,6 +220,11 @@ struct VerifyMetrics
   // into the PSNR samples).
   int64_t warmupNs = 800'000'000;
 
+  int distinctIndices() const noexcept
+  {
+    return __builtin_popcountll(idxSeenMask.load(std::memory_order_relaxed));
+  }
+
   void reserveSamples(int n)
   {
     latency.reserve(n);
@@ -229,6 +239,9 @@ struct VerifyMetrics
       postWarmFrames.fetch_add(1, std::memory_order_relaxed);
     if(idx < 0)
       return false;
+    if(!warm)
+      idxSeenMask.fetch_or(
+          std::uint64_t(1) << (idx % kIdxMod), std::memory_order_relaxed);
     if(!warm && lastIdx >= 0)
     {
       const int step = ((idx - lastIdx) % kIdxMod + kIdxMod) % kIdxMod;
@@ -641,10 +654,7 @@ Result runCell(
   inS.pixelFormat = pf.fmt;
   inS.connection = cn.conn;
 
-  // Only an ISF shader lacks the index band; the shader texgen carries it, so
-  // it verifies exactly like the CPU pattern does.
   const bool usedCpuPattern = opt.cpuPattern;
-  const bool hasIndexBand = opt.cpuPattern || opt.isfPath.isEmpty();
   auto* src = makeSourceNode(opt.isfPath, opt.cpuPattern, [](int idx) {
     g_sendNs[idx].store(nowNs(), std::memory_order_relaxed);
   });
@@ -734,6 +744,11 @@ Result runCell(
   r.recv = M.frames.load();
   r.gaps = M.gaps.load();
   r.repeats = M.repeats.load();
+  // Whether the source really carried an advancing index band, observed from
+  // the decoded frames rather than inferred from which node was built. Three
+  // distinct values cannot come from a static pattern, and tolerate a couple
+  // of mis-decodes at the edges of the warmup window.
+  const bool sawAdvancingIndex = M.distinctIndices() >= 3;
   // Rate over the accounted (post-warmup) window; the raw total spans the
   // warmup too and understates every long-warmup cell.
   r.fps = (opt.txOnly ? int(out->pacingGoodXfers()) : M.postWarmFrames.load())
@@ -775,7 +790,7 @@ Result runCell(
     // shader repeats by construction and lands in PERF-ONLY(no-index) below.
     else if(
         const int postWarm = M.postWarmFrames.load();
-        hasIndexBand && postWarm > 2 && r.repeats >= postWarm - 2)
+        sawAdvancingIndex && postWarm > 2 && r.repeats >= postWarm - 2)
       r.status = "FAIL(no-capture)";
     else if(r.minPsnr < pf.psnrThreshold)
       r.status = (rgbRequested && r.minPsnr >= 15.0) ? "SKIP(rgb-wire-degraded)"
@@ -792,7 +807,7 @@ Result runCell(
   // exists (latency 0). Those are not passes — they are an unverified
   // throughput measurement, and must not be reported as correctness. The
   // shader texgen does carry the band, so it is judged normally.
-  if(!hasIndexBand && r.status == "PASS")
+  if(!sawAdvancingIndex && r.status == "PASS")
     r.status = "PERF-ONLY(no-index)";
   if(r.rxPinUnmet || r.txPinUnmet)
     r.status = "FAIL(rung-not-engaged)";
