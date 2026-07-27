@@ -8,13 +8,32 @@
 //   V4L2CaptureTest --size 3840x2160 --fourcc UYVY
 //   V4L2CaptureTest --frames 120 --list
 //
+// The kernel cells above need neither a GPU nor a display. `--api` adds the
+// renderer cells on top: the real product path (V4L2CaptureNode ->
+// DMACaptureInputNode renderer -> BackgroundNode readback), once pinned to the
+// CPU rung and once to the DMA-BUF rung, comparing every rendered frame of the
+// second against a golden frame taken from the first. That comparison is the
+// content proof for the zero-copy path -- the imported texture must decode to
+// the same pixels the host-staged upload produced, which a frame count or a
+// non-black check cannot show.
+//
+//   V4L2CaptureTest --api opengl --device /dev/video0
+//   V4L2CaptureTest --api vulkan --seconds 4
+//
 // Exit code is nonzero if any pinned mode failed to engage or any cell FAILed.
 
 #include "V4L2DonorAllocator.hpp"
 
+#include <v4l2/V4L2CaptureNode.hpp>
 #include <v4l2/V4L2GbmAllocator.hpp>
 #include <v4l2/V4L2NvBufAllocator.hpp>
 #include <v4l2/V4L2Session.hpp>
+
+#include <Gfx/Graph/BackgroundNode.hpp>
+#include <Gfx/Graph/Graph.hpp>
+#include <Gfx/Graph/RenderState.hpp>
+
+#include <core/application/MinimalApplication.hpp>
 
 #include <linux/dma-buf.h>
 #include <linux/videodev2.h>
@@ -22,7 +41,16 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <QEventLoop>
+#include <QImage>
+#include <QTimer>
+
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -42,6 +70,9 @@ struct Args
   int slots{4};
   bool list{};
   std::string donor;
+  std::string api;    ///< empty = kernel cells only
+  double seconds{4.}; ///< per renderer cell
+  std::string dump;
 };
 
 std::string fourccStr(std::uint32_t f)
@@ -309,6 +340,231 @@ Result runCell(
   }
   return r;
 }
+
+// ---------------------------------------------------------------------------
+// Renderer cells: the real product path, per capture rung.
+// ---------------------------------------------------------------------------
+
+/// vivid stamps a per-frame counter over the test pattern, which would make a
+/// golden-frame comparison meaningless. Best-effort: turn it off if the control
+/// exists (it does not on a real camera, where --expect any applies instead).
+bool silenceOsdText(const std::string& path)
+{
+  const int fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
+  if(fd < 0)
+    return false;
+  bool found = false;
+  v4l2_queryctrl q{};
+  q.id = V4L2_CTRL_FLAG_NEXT_CTRL;
+  while(::ioctl(fd, VIDIOC_QUERYCTRL, &q) == 0)
+  {
+    const std::string name = reinterpret_cast<const char*>(q.name);
+    if(name.find("OSD Text Mode") != std::string::npos)
+    {
+      // The menu is ordered All / Counters Only / None; pick by label rather
+      // than by index, since index 0 is "All" -- the opposite of what we want.
+      int want = q.maximum;
+      for(int v = q.minimum; v <= q.maximum; ++v)
+      {
+        v4l2_querymenu m{};
+        m.id = q.id;
+        m.index = std::uint32_t(v);
+        if(::ioctl(fd, VIDIOC_QUERYMENU, &m) == 0
+           && std::string(reinterpret_cast<const char*>(m.name)) == "None")
+        {
+          want = v;
+          break;
+        }
+      }
+      v4l2_control c{};
+      c.id = q.id;
+      c.value = want;
+      found = ::ioctl(fd, VIDIOC_S_CTRL, &c) == 0;
+      break;
+    }
+    q.id |= V4L2_CTRL_FLAG_NEXT_CTRL;
+  }
+  ::close(fd);
+  return found;
+}
+
+double psnrRgba(const std::uint8_t* a, const std::uint8_t* b, int w, int h)
+{
+  double mse = 0;
+  long n = 0;
+  for(long i = 0; i < long(w) * h; ++i)
+    for(int c = 0; c < 3; ++c)
+    {
+      const double d = double(a[i * 4 + c]) - double(b[i * 4 + c]);
+      mse += d * d;
+      ++n;
+    }
+  if(n == 0)
+    return 0;
+  mse /= double(n);
+  if(mse <= 1e-9)
+    return 99.0;
+  return 10.0 * std::log10(255.0 * 255.0 / mse);
+}
+
+struct RenderCell
+{
+  std::string device, pin;
+  std::string engaged = "-";
+  bool pinUnmet{};
+  int w{}, h{};
+  int frames{};
+  double fps{};
+  double meanLuma{};
+  double minPsnr{-1}, meanPsnr{-1};
+  bool uniform{true};
+  std::string verdict = "SKIP";
+  bool pass{};
+};
+
+/// One renderer run. Every rendered frame is compared against @p golden; when
+/// that is empty the run's own first stable frame becomes the reference, which
+/// is what turns the CPU cell into a source-stability floor for the GPU cell's
+/// numbers rather than an assumed-perfect baseline.
+RenderCell runRenderCell(
+    const DeviceInfo& dev, const Args& a, score::gfx::GraphicsApi api,
+    const char* pin, std::vector<std::uint8_t> golden,
+    std::vector<std::uint8_t>* goldenOut)
+{
+  RenderCell r;
+  r.device = dev.path;
+  r.pin = pin;
+
+  V4L2InputSettings s;
+  s.device = dev.path;
+  s.width = std::uint32_t(a.width);
+  s.height = std::uint32_t(a.height);
+  s.fourcc = parseFourcc(a.fourcc);
+
+  // The output is sized to the wire geometry so the readback compares 1:1 with
+  // the reference instead of through a rescale.
+  QSize outSize{1280, 720};
+  {
+    Session probe;
+    if(probe.open(dev.path))
+    {
+      if(a.width || a.height || !a.fourcc.empty())
+        probe.configure(s.width, s.height, s.fourcc);
+      const auto f = probe.format();
+      if(f.width > 0 && f.height > 0)
+        outSize = QSize(int(f.width), int(f.height));
+    }
+  }
+
+  qputenv("SCORE_GFX_CAPTURE_STRATEGY", pin);
+
+  auto* in = new Gfx::V4L2::V4L2CaptureNode(s);
+  auto* bg = new score::gfx::BackgroundNode();
+  bg->shared_readback = std::make_shared<QRhiReadbackResult>();
+  bg->setSize(outSize);
+  auto graph = std::make_unique<score::gfx::Graph>();
+  graph->addNode(in);
+  graph->addNode(bg);
+  graph->addEdge(
+      in->output[0], bg->input[0], Process::CableType::ImmediateGlutton);
+  graph->createAllRenderLists(api);
+
+  if(!bg->canRender())
+  {
+    r.verdict = "SKIP(render-init)";
+    graph.reset();
+    delete bg;
+    delete in;
+    return r;
+  }
+
+  const auto t0 = std::chrono::steady_clock::now();
+  constexpr double kWarmupSecs = 1.0;
+  double psnrSum = 0, psnrMin = 99.0, lumaSum = 0;
+  int psnrN = 0, lumaN = 0;
+  bool dumped = false;
+
+  QTimer render;
+  render.setTimerType(Qt::PreciseTimer);
+  QObject::connect(&render, &QTimer::timeout, [&] {
+    bg->render();
+    auto& rb = *bg->shared_readback;
+    if(rb.data.isEmpty() || rb.pixelSize.isEmpty())
+      return;
+    if(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count()
+       < kWarmupSecs)
+      return;
+    const int w = rb.pixelSize.width(), h = rb.pixelSize.height();
+    const auto* px = reinterpret_cast<const std::uint8_t*>(rb.data.constData());
+    r.w = w;
+    r.h = h;
+    r.frames++;
+
+    long sum = 0, n = 0;
+    const std::uint8_t first = px[1];
+    for(int y = 0; y < h; y += std::max(1, h / 48))
+      for(int x = 0; x < w; x += std::max(1, w / 48))
+      {
+        const auto g = px[(std::size_t(y) * w + x) * 4 + 1];
+        if(g != first)
+          r.uniform = false;
+        sum += g;
+        ++n;
+      }
+    lumaSum += double(sum) / double(std::max(1L, n));
+    lumaN++;
+
+    if(golden.empty())
+    {
+      golden.assign(px, px + std::size_t(w) * h * 4);
+      if(goldenOut)
+        *goldenOut = golden;
+      return;
+    }
+
+    if(golden.size() == std::size_t(w) * h * 4)
+    {
+      const double p = psnrRgba(px, golden.data(), w, h);
+      psnrSum += p;
+      psnrMin = std::min(psnrMin, p);
+      psnrN++;
+    }
+    if(!a.dump.empty() && !dumped)
+    {
+      dumped = true;
+      QImage(px, w, h, QImage::Format_RGBA8888)
+          .save(QString::fromStdString(a.dump + "_" + std::string(pin) + ".png"));
+    }
+  });
+  render.start(8);
+
+  QEventLoop loop;
+  QTimer stopper;
+  stopper.setSingleShot(true);
+  QObject::connect(&stopper, &QTimer::timeout, &loop, [&] {
+    render.stop();
+    loop.quit();
+  });
+  stopper.start(qint64((a.seconds + kWarmupSecs) * 1000));
+  loop.exec();
+  render.stop();
+
+  r.fps = a.seconds > 0 ? r.frames / a.seconds : 0;
+  r.meanLuma = lumaN > 0 ? lumaSum / lumaN : 0;
+  if(psnrN > 0)
+  {
+    r.meanPsnr = psnrSum / psnrN;
+    r.minPsnr = psnrMin;
+  }
+  if(const char* n = in->engagedCaptureStrategy())
+    r.engaged = n;
+  r.pinUnmet = in->captureStrategyPinUnmet();
+
+  graph.reset();
+  delete bg;
+  delete in;
+  return r;
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -330,6 +586,12 @@ int main(int argc, char** argv)
       a.slots = std::atoi(next().c_str());
     else if(s == "--donor")
       a.donor = next();
+    else if(s == "--api")
+      a.api = next();
+    else if(s == "--seconds")
+      a.seconds = std::atof(next().c_str());
+    else if(s == "--dump")
+      a.dump = next();
     else if(s == "--list")
       a.list = true;
     else if(s == "--size")
@@ -424,5 +686,93 @@ int main(int argc, char** argv)
       failed++;
   }
   std::printf("\n%d PASS, %d FAIL, %d SKIP\n", passed, failed, skipped);
+
+  if(a.api.empty())
+    return failed ? 1 : 0;
+
+  // --- renderer cells -------------------------------------------------------
+  auto api = score::gfx::GraphicsApi::OpenGL;
+  if(a.api == "vulkan")
+    api = score::gfx::GraphicsApi::Vulkan;
+  else if(a.api != "opengl")
+  {
+    std::printf("unknown --api '%s'\n", a.api.c_str());
+    return 2;
+  }
+
+  qputenv("SCORE_DISABLE_AUDIOPLUGINS", "1");
+  qputenv("SCORE_SANITIZE_SKIP_CHECKS", "1");
+  qputenv("SCORE_AUDIO_BACKEND", "dummy");
+  // The EGL DMA-BUF importer only works against an EGL-backed GL context;
+  // Qt's XCB plugin defaults to GLX, where the rung cannot exist at all.
+  if(qEnvironmentVariableIsEmpty("QT_XCB_GL_INTEGRATION"))
+    qputenv("QT_XCB_GL_INTEGRATION", "xcb_egl");
+  score::MinimalGUIApplication app(argc, argv);
+
+  std::printf(
+      "\n%-14s %-10s %-22s %6s %6s %8s %8s %8s %s\n", "device", "pin",
+      "engaged-rung", "frames", "fps", "luma", "minPSNR", "meanPSNR", "verdict");
+  std::vector<RenderCell> cells;
+  for(const auto& d : devices)
+  {
+    const bool osdOff = silenceOsdText(d.path);
+
+    std::vector<std::uint8_t> golden;
+    auto ref = runRenderCell(d, a, api, "cpu", {}, &golden);
+    // The CPU rung is the reference: without it there is nothing to compare
+    // the zero-copy path's pixels against, so its failure invalidates the row.
+    if(ref.frames == 0)
+      ref.verdict = "FAIL(no-frames)";
+    else if(ref.meanLuma < 4.0 || ref.uniform)
+      ref.verdict = "FAIL(black-or-uniform)";
+    else
+    {
+      ref.pass = true;
+      ref.verdict = "PASS(reference)";
+    }
+    cells.push_back(ref);
+
+    // Cross-run comparison is only meaningful for a source that repeats: vivid
+    // does once its OSD counter is off, a live camera does not.
+    const bool comparable = osdOff && d.driver == "vivid" && ref.pass;
+    auto gpu = runRenderCell(
+        d, a, api, "dmabuf", comparable ? golden : std::vector<std::uint8_t>{},
+        nullptr);
+    // The zero-copy frames must be at least as faithful to the reference frame
+    // as the CPU rung's own frames were -- an absolute threshold would either
+    // pass a broken import on a noisy source or fail a correct one.
+    const double floorPsnr
+        = ref.minPsnr > 0 ? std::max(6.0, ref.minPsnr - 3.0) : 30.0;
+    if(gpu.pinUnmet || gpu.engaged.find("dmabuf") == std::string::npos)
+      gpu.verdict = "SKIP(no-dmabuf-import: " + gpu.engaged + ")";
+    else if(gpu.frames == 0)
+      gpu.verdict = "FAIL(no-frames)";
+    else if(gpu.meanLuma < 4.0 || gpu.uniform)
+      gpu.verdict = "FAIL(black-or-uniform)";
+    else if(comparable && gpu.minPsnr < floorPsnr)
+      gpu.verdict = "FAIL(content-mismatch)";
+    else
+    {
+      gpu.pass = true;
+      gpu.verdict = comparable ? "PASS(matches-cpu)" : "PASS(content-only)";
+    }
+    cells.push_back(gpu);
+  }
+
+  for(const auto& c : cells)
+  {
+    std::printf(
+        "%-14s %-10s %-22s %6d %6.1f %8.1f %8.2f %8.2f %s\n", c.device.c_str(),
+        c.pin.c_str(), c.engaged.c_str(), c.frames, c.fps, c.meanLuma,
+        c.minPsnr, c.meanPsnr, c.verdict.c_str());
+    if(c.pass)
+      passed++;
+    else if(c.verdict.rfind("SKIP", 0) == 0)
+      skipped++;
+    else
+      failed++;
+  }
+  std::printf("\n%d PASS, %d FAIL, %d SKIP (kernel + renderer)\n", passed, failed,
+              skipped);
   return failed ? 1 : 0;
 }

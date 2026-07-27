@@ -3,6 +3,7 @@
 #include <v4l2/V4L2CpuCapture.hpp>
 
 #include <Gfx/Graph/decoders/WireDecoderFactory.hpp>
+#include <Gfx/Graph/interop/DmaBufImportCapture.hpp>
 #include <Gfx/Graph/interop/VideoCaptureStrategy.hpp>
 #include <Gfx/Graph/interop/VideoPixelFormatAV.hpp>
 
@@ -10,7 +11,9 @@
 
 #include <QDebug>
 
+#include <algorithm>
 #include <cstring>
+#include <vector>
 
 namespace Gfx::V4L2
 {
@@ -91,6 +94,16 @@ bool V4L2InputBackend::open()
   m_height = int(fmt.height);
   m_fourcc = fmt.fourcc;
   m_frameByteSize = fmt.sizeImage;
+
+  // Seed the live-format channel with the geometry we just negotiated. The
+  // renderer baselines the channel at the end of its init(); without this the
+  // capture thread's first publish races that baseline and, when it wins, is
+  // read as a mid-stream format change -- tearing down and rebuilding the whole
+  // renderer once per start.
+  m_ring.publishFormat(
+      m_width, m_height,
+      int(score::gfx::interop::toAVPixelFormat(neutralFromV4L2Fourcc(m_fourcc))),
+      0.0);
   return true;
 }
 
@@ -115,12 +128,50 @@ V4L2InputBackend::makeDecoder(Video::VideoMetadata& meta)
 }
 
 std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
-V4L2InputBackend::pickStrategy(QRhi::Implementation)
+V4L2InputBackend::pickStrategy(QRhi::Implementation impl)
 {
-  // No GPU-direct strategy yet: importing the V4L2 DMA-BUF into the
-  // renderer's texture needs its own VideoCaptureStrategy. The session
-  // supports both zero-copy ingress modes already, so that is additive.
-  return {};
+  m_gpu = nullptr;
+  m_gpuActive = false;
+
+  // Vulkan and EGL-backed GL are the only backends with a DMA-BUF import path.
+  if(impl != QRhi::Vulkan && impl != QRhi::OpenGLES2)
+    return {};
+  if(!m_session.isOpen() || m_session.isStreaming())
+    return {};
+
+  const auto caps = m_session.bufferCaps();
+  if(!caps.probed || !caps.mmap)
+    return {};
+
+  // The strategy exposes one sampled texture, so a multi-plane wire layout
+  // cannot be imported through it.
+  const auto& fmt = m_session.format();
+  if(fmt.planeCount != 1)
+    return {};
+
+  // Deep enough for the driver's own queue plus the frames the renderer holds
+  // while the GPU is still reading them.
+  const std::size_t slots = std::max<std::size_t>(m_settings.slotCount, 8u);
+  if(!m_session.start(BufferMode::MmapExport, slots))
+  {
+    qDebug() << "V4L2: no GPU-direct rung, VIDIOC_EXPBUF path failed:"
+             << m_session.lastError().c_str();
+    return {};
+  }
+
+  std::vector<score::gfx::interop::DmaBufSlotDesc> descs;
+  descs.reserve(m_session.slotCount());
+  for(std::size_t i = 0; i < m_session.slotCount(); ++i)
+  {
+    const auto& s = m_session.slot(i);
+    descs.push_back(
+        {s.dmabufFd[0], s.modifier, 0u, m_session.format().bytesPerLine});
+  }
+
+  auto strat = std::make_unique<score::gfx::interop::DmaBufImportCapture>(
+      "V4L2", std::move(descs));
+  m_gpu = strat.get();
+  return strat;
 }
 
 std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
@@ -133,6 +184,9 @@ void V4L2InputBackend::setStrategy(
     score::gfx::interop::VideoCaptureStrategy* s) noexcept
 {
   m_strategy = s;
+  m_gpuActive
+      = s != nullptr
+        && s == static_cast<score::gfx::interop::VideoCaptureStrategy*>(m_gpu);
 }
 
 void V4L2InputBackend::start()
@@ -140,23 +194,39 @@ void V4L2InputBackend::start()
   if(m_started || !m_session.isOpen() || !m_strategy)
     return;
 
-  // MmapRead: the loop copies into the strategy's slots, which is the
-  // host-staged contract the renderer expects from a CPU strategy.
-  if(!m_session.start(BufferMode::MmapRead, m_settings.slotCount))
+  if(m_gpuActive)
   {
-    qWarning() << "V4L2: STREAMON failed:" << m_session.lastError().c_str();
-    return;
+    // pickStrategy already brought the queue up in the exporting mode the
+    // strategy imported from; restarting it would invalidate those imports.
+    if(!m_session.isStreaming())
+      return;
+  }
+  else
+  {
+    // The GPU rung was refused, rejected by the pin, or never tried: the CPU
+    // strategy reads host-visible memory, so the queue has to be reallocated
+    // as MmapRead.
+    if(m_session.isStreaming())
+      m_session.stop();
+    if(!m_session.start(BufferMode::MmapRead, m_settings.slotCount))
+    {
+      qWarning() << "V4L2: STREAMON failed:" << m_session.lastError().c_str();
+      return;
+    }
   }
 
   m_running.store(true, std::memory_order_release);
-  m_thread = std::thread{[this] { runLoop(); }};
+  m_thread = std::thread{[this] {
+    if(m_gpuActive)
+      runLoopDmaBuf();
+    else
+      runLoopStaged();
+  }};
   m_started = true;
 }
 
 void V4L2InputBackend::stop()
 {
-  if(!m_started)
-    return;
   m_running.store(false, std::memory_order_release);
   if(m_thread.joinable())
     m_thread.join();
@@ -164,7 +234,52 @@ void V4L2InputBackend::stop()
   m_started = false;
 }
 
-void V4L2InputBackend::runLoop()
+void V4L2InputBackend::requeueReleasedSlots()
+{
+  if(!m_gpu)
+    return;
+  std::uint32_t mask = m_gpu->takeReturnedSlots();
+  for(std::size_t i = 0; mask != 0u; ++i, mask >>= 1)
+    if(mask & 1u)
+      m_session.requeue(i);
+}
+
+void V4L2InputBackend::runLoopDmaBuf()
+{
+  while(m_running.load(std::memory_order_acquire))
+  {
+    // Before asking for another buffer: the driver only owns the slots we have
+    // given back, and the renderer's releases arrive asynchronously.
+    requeueReleasedSlots();
+
+    const int idx = m_session.dequeue(200);
+    if(idx == -1)
+      continue;
+    if(idx < 0)
+      break;
+
+    const auto& fmt = m_session.format();
+    m_ring.publishFormat(
+        int(fmt.width), int(fmt.height),
+        int(score::gfx::interop::toAVPixelFormat(
+            neutralFromV4L2Fourcc(fmt.fourcc))),
+        0.0);
+
+    // From here the slot belongs to the renderer: it samples the buffer in
+    // place, so requeueing it now would let the driver overwrite the frame
+    // being drawn. It comes back through requeueReleasedSlots().
+    if(!m_gpu->ingestFrame(std::size_t(idx)))
+    {
+      m_session.requeue(std::size_t(idx));
+      continue;
+    }
+    m_ring.latestSlot.store(std::size_t(idx), std::memory_order_release);
+    m_ring.latestFrameId.fetch_add(1, std::memory_order_release);
+  }
+  requeueReleasedSlots();
+}
+
+void V4L2InputBackend::runLoopStaged()
 {
   auto* strat = m_strategy;
   if(!strat)

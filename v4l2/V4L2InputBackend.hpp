@@ -9,19 +9,25 @@
  * bytes with the shared unpacker shaders.
  *
  * Two things differ from the SDI cards. V4L2 buffers are BORROWED -- every
- * DQBUF must be returned with QBUF or the driver starves -- so the loop
- * dequeues, copies into the strategy slot, and requeues immediately rather
- * than holding the buffer for the renderer. And the source can change format
- * mid-stream (a webcam renegotiating, an HDMI-to-V4L2 bridge relocking), which
- * is published through the ring's seqlock exactly as the SDI cards publish a
- * detected wire format.
+ * DQBUF must be returned with QBUF or the driver starves. And the source can
+ * change format mid-stream (a webcam renegotiating, an HDMI-to-V4L2 bridge
+ * relocking), which is published through the ring's seqlock exactly as the SDI
+ * cards publish a detected wire format.
  *
- * pickStrategy() returns nothing today: the zero-copy path needs a
- * VideoCaptureStrategy that imports the V4L2 DMA-BUF into the renderer's
- * texture, which is a separate piece of work. The session's MmapExport and
- * DmaBufImport modes are implemented and validated (V4L2CaptureTest), so that
- * strategy has a working foundation to sit on -- but until it exists this
- * backend is host-staged, like Magewell.
+ * Two rungs:
+ *   - GPU-direct: the queue is brought up in `MmapExport` and each buffer's
+ *     DMA-BUF fd is imported once into the renderer's sampled texture
+ *     (`DmaBufImportCapture`). No pixel is copied. A dequeued buffer is then
+ *     owned by the renderer, so the loop requeues it only when the strategy
+ *     says the GPU is finished with it.
+ *   - Host-staged: `MmapRead`, the loop copies each frame into a ring slot and
+ *     requeues immediately.
+ *
+ * The GPU rung has to bring the session up in `pickStrategy` rather than
+ * `start`: the fds it imports do not exist until the queue is allocated, and
+ * the rung must be proven at strategy-init time so a refused import degrades
+ * before the renderer commits to it. `start()` puts the session back on
+ * `MmapRead` when the renderer settled on the CPU strategy instead.
  */
 
 #include <v4l2/V4L2Session.hpp>
@@ -37,6 +43,7 @@
 namespace score::gfx::interop
 {
 struct VideoCaptureSlotRing;
+struct DmaBufImportCapture;
 }
 
 namespace Gfx::V4L2
@@ -76,13 +83,22 @@ public:
   void stop() override;
 
 private:
-  void runLoop();
+  void runLoopStaged();
+  void runLoopDmaBuf();
+  /// Hand back every slot the renderer has released. Capture thread only:
+  /// `Session::requeue` is not concurrent with `dequeue`.
+  void requeueReleasedSlots();
 
   V4L2InputSettings m_settings;
   score::gfx::interop::VideoCaptureSlotRing& m_ring;
 
   Session m_session;
   score::gfx::interop::VideoCaptureStrategy* m_strategy{};
+  /// The GPU-direct strategy handed out by pickStrategy, kept typed so the
+  /// capture loop can reach its slot-return channel. Non-owning; null until
+  /// pickStrategy succeeds, and only *active* once the renderer settles on it.
+  score::gfx::interop::DmaBufImportCapture* m_gpu{};
+  bool m_gpuActive{};
 
   std::thread m_thread;
   std::atomic<bool> m_running{false};

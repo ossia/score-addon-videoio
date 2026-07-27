@@ -19,6 +19,8 @@
 
 #include <v4l2/V4L2Session.hpp>
 
+#include <score_addon_videoio_export.h>
+
 #include <cstdint>
 #include <unordered_map>
 
@@ -33,9 +35,10 @@ namespace Gfx::V4L2
 /// Maps a V4L2 pixel format to the DRM fourcc naming the same memory layout.
 /// Returns 0 when there is no equivalent, which must abort the DmaBufImport
 /// rung rather than silently allocate a differently-shaped buffer.
-std::uint32_t drmFourccFromV4L2(std::uint32_t v4l2Fourcc) noexcept;
+SCORE_ADDON_VIDEOIO_EXPORT std::uint32_t
+drmFourccFromV4L2(std::uint32_t v4l2Fourcc) noexcept;
 
-class GbmAllocator final : public DmaBufAllocator
+class SCORE_ADDON_VIDEOIO_EXPORT GbmAllocator final : public DmaBufAllocator
 {
 public:
   GbmAllocator();

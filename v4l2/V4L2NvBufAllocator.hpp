@@ -38,9 +38,9 @@ namespace Gfx::V4L2
 
 /// True when built against the Tegra multimedia headers AND the runtime
 /// library is present. Everywhere else this is false and the rung is skipped.
-bool nvBufSurfaceAvailable() noexcept;
+SCORE_ADDON_VIDEOIO_EXPORT bool nvBufSurfaceAvailable() noexcept;
 
-class NvBufAllocator final : public DmaBufAllocator
+class SCORE_ADDON_VIDEOIO_EXPORT NvBufAllocator final : public DmaBufAllocator
 {
 public:
   NvBufAllocator();

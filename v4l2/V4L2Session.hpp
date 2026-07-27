@@ -39,6 +39,8 @@
  * `start`/`stop` are setup-thread only.
  */
 
+#include <score_addon_videoio_export.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -56,7 +58,7 @@ enum class BufferMode
   DmaBufImport, ///< we allocate via DmaBufAllocator, driver imports
 };
 
-const char* toString(BufferMode) noexcept;
+SCORE_ADDON_VIDEOIO_EXPORT const char* toString(BufferMode) noexcept;
 
 /// What a queue actually supports, read from the REQBUFS capability bits
 /// rather than assumed from the driver name.
@@ -141,7 +143,7 @@ struct Slot
   std::uint64_t timestampNs{};     ///< v4l2_buffer.timestamp, monotonic
 };
 
-class Session
+class SCORE_ADDON_VIDEOIO_EXPORT Session
 {
 public:
   Session();
@@ -213,6 +215,6 @@ struct DeviceInfo
 
 /// Enumerate V4L2 capture nodes. Nodes that are not capture-capable
 /// (metadata, output, radio) are skipped.
-std::vector<DeviceInfo> enumerateDevices();
+SCORE_ADDON_VIDEOIO_EXPORT std::vector<DeviceInfo> enumerateDevices();
 
 } // namespace Gfx::V4L2
