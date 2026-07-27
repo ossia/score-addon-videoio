@@ -17,6 +17,8 @@
 #include <Gfx/Graph/BackgroundNode.hpp>
 #include <Gfx/Graph/Graph.hpp>
 #include <Gfx/Graph/RenderState.hpp>
+#include "ShaderTexgenNode.hpp"
+
 #include <Gfx/Graph/ISFNode.hpp>
 #include <Gfx/Graph/TexgenNode.hpp>
 #include <Gfx/ShaderProgram.hpp>
@@ -407,13 +409,27 @@ struct GpuReceiver
 // ---------------------------------------------------------------------------
 // Cells.
 // ---------------------------------------------------------------------------
-/// Source node for a cell. Default is a score ISFNode running an ISF shader on
-/// the GPU; --cpu-pattern falls back to the old TexgenNode, whose CPU paint
-/// measured 19.83 ms/frame at 2160p (63% of the send phase) plus a 33 MB upload
-/// per tick. Both are score graph nodes — the ISF one is the path score itself
-/// uses, so the harness stops exercising a source the product never has.
-score::gfx::Node* makeSourceNode(const QString& isfPath, bool cpuPattern)
+/// Source node for a cell.
+///
+/// Default is ShaderTexgenNode: the same gradient + rolling 6-bit index band
+/// the CPU paint() draws, computed in the fragment shader and bit-exact with
+/// it. That matters beyond speed — the index band is what lets a captured
+/// frame be matched to the frame that was sent, so ordering, latency and
+/// drops are measurable. An arbitrary ISF shader carries no index, which is
+/// why those cells could only ever report PERF-ONLY.
+///
+/// --isf still accepts a shader for throughput comparisons, and --cpu-pattern
+/// falls back to TexgenNode, whose CPU paint measured 19.83 ms/frame at 2160p
+/// (63% of the send phase) plus a 33 MB upload per tick.
+score::gfx::Node*
+makeSourceNode(const QString& isfPath, bool cpuPattern, std::function<void(int)> onFrame)
 {
+  if(!cpuPattern && isfPath.isEmpty())
+  {
+    auto* n = new score::gfx::ShaderTexgenNode;
+    n->onFrame = std::move(onFrame);
+    return n;
+  }
   if(!cpuPattern && !isfPath.isEmpty())
   {
     QString frag;
@@ -625,8 +641,13 @@ Result runCell(
   inS.pixelFormat = pf.fmt;
   inS.connection = cn.conn;
 
-  const bool usedCpuPattern = opt.cpuPattern || opt.isfPath.isEmpty();
-  auto* src = makeSourceNode(opt.isfPath, opt.cpuPattern);
+  // Only an ISF shader lacks the index band; the shader texgen carries it, so
+  // it verifies exactly like the CPU pattern does.
+  const bool usedCpuPattern = opt.cpuPattern;
+  const bool hasIndexBand = opt.cpuPattern || opt.isfPath.isEmpty();
+  auto* src = makeSourceNode(opt.isfPath, opt.cpuPattern, [](int idx) {
+    g_sendNs[idx].store(nowNs(), std::memory_order_relaxed);
+  });
   auto* out = new DeckLinkNode(outS);
 
   auto graph = std::make_unique<score::gfx::Graph>();
@@ -749,12 +770,12 @@ Result runCell(
     // sends the reader hunting for a colour-conversion bug instead. Repeats
     // are only counted after warmup, so compare against the post-warmup frame
     // count: against the raw total, a long-warmup (UHD) cell could freeze
-    // completely and still slip past this guard as a PSNR-99 PASS. Only the
-    // CPU pattern carries a frame index; a static GPU pattern repeats by
-    // construction and lands in PERF-ONLY(no-index) below instead.
+    // completely and still slip past this guard as a PSNR-99 PASS. Only a
+    // source carrying the index band can be judged this way; an arbitrary ISF
+    // shader repeats by construction and lands in PERF-ONLY(no-index) below.
     else if(
         const int postWarm = M.postWarmFrames.load();
-        usedCpuPattern && postWarm > 2 && r.repeats >= postWarm - 2)
+        hasIndexBand && postWarm > 2 && r.repeats >= postWarm - 2)
       r.status = "FAIL(no-capture)";
     else if(r.minPsnr < pf.psnrThreshold)
       r.status = (rgbRequested && r.minPsnr >= 15.0) ? "SKIP(rgb-wire-degraded)"
@@ -765,12 +786,13 @@ Result runCell(
 
   // A pinned rung that did not engage outranks every other verdict: the numbers
   // describe a different path than the one requested.
-  // The ISF sources available today paint a static pattern with no frame-index
-  // band, so idxFromRgba returns a constant: every frame equals the captured
+  // An arbitrary ISF shader paints a static pattern with no frame-index band,
+  // so idxFromRgba returns a constant: every frame equals the captured
   // reference (PSNR 99), nothing advances (rep ~= recv) and no send timestamp
   // exists (latency 0). Those are not passes — they are an unverified
-  // throughput measurement, and must not be reported as correctness.
-  if(!usedCpuPattern && r.status == "PASS")
+  // throughput measurement, and must not be reported as correctness. The
+  // shader texgen does carry the band, so it is judged normally.
+  if(!hasIndexBand && r.status == "PASS")
     r.status = "PERF-ONLY(no-index)";
   if(r.rxPinUnmet || r.txPinUnmet)
     r.status = "FAIL(rung-not-engaged)";
