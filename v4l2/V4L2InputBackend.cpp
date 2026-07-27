@@ -31,8 +31,34 @@ VideoPixelFormat neutralFromV4L2Fourcc(std::uint32_t f) noexcept
       return VideoPixelFormat::YVYU422;
     case V4L2_PIX_FMT_VYUY:
       return VideoPixelFormat::VYUY422;
-    case V4L2_PIX_FMT_NV12:
-      return VideoPixelFormat::NV12;
+    // NOTE: multi-plane formats (NV12/NV21/NV16/NV24/NV42, YUV420P, YUV422P)
+    // are deliberately NOT mapped here. CpuStagedCapture uploads exactly one
+    // QRhiTextureUploadEntry, while the planar decoders allocate 2-3 plane
+    // textures, so only Y is ever populated and the chroma planes sample
+    // garbage -- measured against ffmpeg on vivid: NV12 6.07 dB, 422P 6.58 dB,
+    // YU12 6.53 dB, all visibly green. NV12 had been mapped since the original
+    // V4L2 work and was broken the whole time; it is removed here rather than
+    // left shipping wrong pixels. The decoders themselves are correct and are
+    // wired in makeWireDecoder for capture paths that do upload planes.
+    // Re-map these once CpuStagedCapture grows per-plane upload.
+    case V4L2_PIX_FMT_VUYA32:
+      return VideoPixelFormat::VUYA;
+    case V4L2_PIX_FMT_VUYX32:
+      return VideoPixelFormat::VUYX;
+    // The eight 32-bit orderings differ only in where the alpha/padding byte
+    // sits; the neutral names below describe MEMORY order, matching V4L2's.
+    case V4L2_PIX_FMT_ARGB32:
+      return VideoPixelFormat::ARGB8;
+    case V4L2_PIX_FMT_XRGB32:
+      return VideoPixelFormat::XRGB8;
+    case V4L2_PIX_FMT_XBGR32:
+      return VideoPixelFormat::BGRX8;
+    case V4L2_PIX_FMT_RGBX32:
+      return VideoPixelFormat::RGBX8;
+    case V4L2_PIX_FMT_BGRA32:
+      return VideoPixelFormat::ABGR8;
+    case V4L2_PIX_FMT_BGRX32:
+      return VideoPixelFormat::XBGR8;
     case V4L2_PIX_FMT_ABGR32: // V4L2 "AR24": B,G,R,A in memory
       return VideoPixelFormat::BGRA8;
     case V4L2_PIX_FMT_RGBA32: // V4L2 "AB24": R,G,B,A in memory
@@ -43,6 +69,10 @@ VideoPixelFormat neutralFromV4L2Fourcc(std::uint32_t f) noexcept
     // interpreting the values as distance is a separate concern.
     case V4L2_PIX_FMT_GREY:
       return VideoPixelFormat::Mono8;
+    case V4L2_PIX_FMT_Y10:
+      return VideoPixelFormat::Mono10;
+    case V4L2_PIX_FMT_Y12:
+      return VideoPixelFormat::Mono12;
     case V4L2_PIX_FMT_Y16:
     case V4L2_PIX_FMT_Z16:
       return VideoPixelFormat::Mono16;
