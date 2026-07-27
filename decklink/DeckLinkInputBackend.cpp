@@ -10,7 +10,7 @@
 
 // NVIDIA-DVP GPU-direct capture via the shared shim, gated on the bridge being
 // linked (same source-side gate AJA uses). GL needs Qt OpenGL; D3D11 is WIN32.
-#if defined(SCORE_HAS_AJA_DVP_BRIDGE)
+#if defined(SCORE_HAS_VIDEOIO_DVP)
 #include <Gfx/Graph/interop/DmaLockPolicy.hpp>
 #if QT_CONFIG(opengl)
 #include <Gfx/Graph/interop/DvpCaptureGl.hpp>

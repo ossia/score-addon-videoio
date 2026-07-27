@@ -470,7 +470,7 @@ score::gfx::interop::VendorDmaRegistrar DeckLinkOutputBackend::registrar()
 
 bool DeckLinkOutputBackend::prefersGpuDownload() const noexcept
 {
-#if defined(SCORE_HAS_AJA_DVP_BRIDGE)
+#if defined(SCORE_HAS_VIDEOIO_DVP)
   return true; // nv_dvp_bridge linked: CpuStagedVideoOutput can DVP texture->sysmem
 #else
   return false;

@@ -336,26 +336,30 @@ if(VIDEOIO_DEFS)
   target_compile_definitions(${PROJECT_NAME} PRIVATE ${VIDEOIO_DEFS})
 endif()
 
-# --- AJA link + GPU-direct bridges ------------------------------------------
+# --- NVIDIA DVP bridge (vendor-neutral) -------------------------------------
+# DVP is not AJA-specific: DeckLink's GPU download rung uses it too. Linking it
+# inside the AJA block meant a DeckLink-only build silently lost DVP, because
+# the source-side gate was never defined. SCORE_HAS_AJA_DVP_BRIDGE is kept for
+# the AJA sources that already spell it that way.
+if(TARGET score_nv_dvp_bridge)
+  target_link_libraries(${PROJECT_NAME} PRIVATE score_nv_dvp_bridge)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE
+    SCORE_HAS_VIDEOIO_DVP=1
+    SCORE_HAS_AJA_DVP_BRIDGE=1)
+  message(STATUS "score-addon-videoio: linking score_nv_dvp_bridge")
+
+  if(WIN32 AND SCORE_NV_DVP_DLL AND EXISTS "${SCORE_NV_DVP_DLL}")
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${SCORE_NV_DVP_DLL}"
+        "$<TARGET_FILE_DIR:${PROJECT_NAME}>/dvp.dll"
+      COMMENT "Copying dvp.dll alongside ${PROJECT_NAME}")
+  endif()
+endif()
+
+# --- AJA link ----------------------------------------------------------------
 if(VIDEOIO_HAS_AJA)
   target_link_libraries(${PROJECT_NAME} PRIVATE ajantv2)
-
-  # Tier-3 GPU<->SDI on Windows uses NVIDIA DVP; the bridge lives in
-  # score_plugin_gfx (score_nv_dvp_bridge target) and is runtime-loaded — no
-  # link-time CUDAToolkit dependency. Source-side gate name preserved.
-  if(TARGET score_nv_dvp_bridge)
-    target_link_libraries(${PROJECT_NAME} PRIVATE score_nv_dvp_bridge)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE SCORE_HAS_AJA_DVP_BRIDGE=1)
-    message(STATUS "score-addon-videoio: linking score_nv_dvp_bridge")
-
-    if(WIN32 AND SCORE_NV_DVP_DLL AND EXISTS "${SCORE_NV_DVP_DLL}")
-      add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          "${SCORE_NV_DVP_DLL}"
-          "$<TARGET_FILE_DIR:${PROJECT_NAME}>/dvp.dll"
-        COMMENT "Copying dvp.dll alongside ${PROJECT_NAME}")
-    endif()
-  endif()
 endif()
 
 # --- DELTACAST link ----------------------------------------------------------
