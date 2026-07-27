@@ -313,14 +313,30 @@ bool Session::open(const std::string& p)
   {
     d->fail("VIDIOC_REQBUFS(probe)");
   }
-  else
+  else if(bits != 0)
   {
     d->caps.probed = true;
+    d->caps.reportsCaps = true;
     d->caps.mmap = bits & V4L2_BUF_CAP_SUPPORTS_MMAP;
     d->caps.userptr = bits & V4L2_BUF_CAP_SUPPORTS_USERPTR;
     d->caps.dmabuf = bits & V4L2_BUF_CAP_SUPPORTS_DMABUF;
     d->caps.requests = bits & V4L2_BUF_CAP_SUPPORTS_REQUESTS;
     d->caps.orphanedBufs = bits & V4L2_BUF_CAP_SUPPORTS_ORPHANED_BUFS;
+  }
+  else
+  {
+    // REQBUFS succeeded but reported nothing. `capabilities` is optional
+    // (Linux 4.20+) and a driver that predates it, or an out-of-tree one that
+    // never filled it in, leaves it zero -- Magewell's ProCapture does, while
+    // REQBUFS(4, MMAP) on the same node happily grants 4 buffers. Treating
+    // zero as "no mode supported" made every Magewell node unusable.
+    // MMAP is the baseline every streaming-capture driver must implement, so
+    // assume just that and let the real REQBUFS decide; the richer modes stay
+    // off because there is no evidence for them, and abortStart() already
+    // unwinds a rung that turns out not to work.
+    d->caps.probed = true;
+    d->caps.reportsCaps = false;
+    d->caps.mmap = true;
   }
 
   v4l2_format f{};

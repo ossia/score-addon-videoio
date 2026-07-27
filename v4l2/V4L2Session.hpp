@@ -69,6 +69,13 @@ struct BufferCaps
   /// and must not be read as "the driver does not support this".
   bool probed{};
 
+  /// False when the driver returned no capability bits at all. The field is
+  /// optional (Linux 4.20+) and out-of-tree drivers commonly leave it zero --
+  /// Magewell ProCapture does. Zero means "not reported", NOT "nothing
+  /// supported", so the flags below are then baseline assumptions rather than
+  /// driver-stated fact.
+  bool reportsCaps{};
+
   bool mmap{};
   bool userptr{};
   bool dmabuf{};
