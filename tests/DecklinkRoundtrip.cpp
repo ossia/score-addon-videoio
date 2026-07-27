@@ -799,6 +799,16 @@ Result runCell(
       r.status = "PASS";
   }
 
+  // A path that transmitted nothing is broken, not merely unverifiable. The
+  // DVP output rung reached exactly this state on the Quadro: sent=0 with
+  // recv=360 and 313 repeats, i.e. the receiver locked onto a frozen frame,
+  // which matches the captured reference perfectly and scores minPSNR 99. That
+  // is a PASS under every content check there is, so it has to be caught on
+  // the send side. Ordered before the no-index demotion so it is not softened
+  // into PERF-ONLY.
+  if(!opt.txOnly && r.sent == 0 && r.recv > 0)
+    r.status = "FAIL(no-tx)";
+
   // A pinned rung that did not engage outranks every other verdict: the numbers
   // describe a different path than the one requested.
   // An arbitrary ISF shader paints a static pattern with no frame-index band,
