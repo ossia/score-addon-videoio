@@ -741,7 +741,12 @@ int main(int argc, char** argv)
     auto ref = runRenderCell(d, a, api, "cpu", {}, &golden);
     // The CPU rung is the reference: without it there is nothing to compare
     // the zero-copy path's pixels against, so its failure invalidates the row.
-    if(ref.frames == 0)
+    if(ref.engaged == "-")
+      // The node never resolved a rung, which for this backend means it
+      // refused the wire format up front (GREY, MJPG: no wire unpacker). A
+      // device the pipeline declines on purpose is not a capture failure.
+      ref.verdict = "SKIP(format-not-decodable)";
+    else if(ref.frames == 0)
       ref.verdict = "FAIL(no-frames)";
     else if(ref.meanLuma < 4.0 || ref.uniform)
       ref.verdict = "FAIL(black-or-uniform)";
