@@ -187,6 +187,10 @@ void V4L2InputBackend::setStrategy(
   m_gpuActive
       = s != nullptr
         && s == static_cast<score::gfx::interop::VideoCaptureStrategy*>(m_gpu);
+  // Settling on anything else means the renderer has already destroyed the
+  // GPU strategy (it owns it), so the typed pointer must not outlive it.
+  if(!m_gpuActive)
+    m_gpu = nullptr;
 }
 
 void V4L2InputBackend::start()
