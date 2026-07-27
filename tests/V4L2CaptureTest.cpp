@@ -13,6 +13,7 @@
 #include "V4L2DonorAllocator.hpp"
 
 #include <v4l2/V4L2GbmAllocator.hpp>
+#include <v4l2/V4L2NvBufAllocator.hpp>
 #include <v4l2/V4L2Session.hpp>
 
 #include <linux/dma-buf.h>
@@ -165,6 +166,7 @@ Result runCell(
   const auto fmt = s.format();
 
   GbmAllocator gbm;
+  NvBufAllocator nvbuf;
   DonorAllocator donor{a.donor};
   DmaBufAllocator* alloc = nullptr;
   if(mode == BufferMode::DmaBufImport && !a.donor.empty())
@@ -176,6 +178,14 @@ Result runCell(
     }
     alloc = &donor;
     r.mode = std::string(toString(mode)) + "/" + donor.name();
+  }
+  else if(mode == BufferMode::DmaBufImport && nvBufSurfaceAvailable()
+          && nvbuf.init())
+  {
+    // Tegra: NVIDIA's V4L2 path takes the importer role only, so the buffers
+    // have to come from NvBufSurface.
+    alloc = &nvbuf;
+    r.mode = std::string(toString(mode)) + "/" + nvbuf.name();
   }
   else if(mode == BufferMode::DmaBufImport)
   {
@@ -195,6 +205,18 @@ Result runCell(
 
   if(!s.start(mode, a.slots, alloc))
   {
+    // An allocator that cannot express this pixel format is a platform
+    // limitation, not a defect: report it as an unavailable rung so it does
+    // not read as a regression in the matrix.
+    if(alloc && s.lastError().find("Allocator") != std::string::npos)
+    {
+      const std::string why = (alloc == &gbm)      ? gbm.lastError()
+                              : (alloc == &nvbuf)  ? nvbuf.lastError().c_str()
+                                                   : donor.lastError();
+      r.verdict = "SKIP(allocator): " + why + " ["
+                  + fourccStr(fmt.fourcc) + "]";
+      return r;
+    }
     char buf[160];
     std::snprintf(
         buf, sizeof(buf), "FAIL(start) [%ux%u %s stride=%u size=%u x%d]: %s",

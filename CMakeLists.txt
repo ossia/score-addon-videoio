@@ -496,7 +496,8 @@ if(SCORE_VIDEOIO_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     tests/V4L2CaptureTest.cpp
     tests/V4L2DonorAllocator.cpp
     v4l2/V4L2Session.cpp
-    v4l2/V4L2GbmAllocator.cpp)
+    v4l2/V4L2GbmAllocator.cpp
+    v4l2/V4L2NvBufAllocator.cpp)
   target_include_directories(V4L2CaptureTest PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_BINARY_DIR}"
