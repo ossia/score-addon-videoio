@@ -9,13 +9,18 @@
 //   V4L2CaptureTest --frames 120 --list
 //
 // The kernel cells above need neither a GPU nor a display. `--api` adds the
-// renderer cells on top: the real product path (V4L2CaptureNode ->
-// DMACaptureInputNode renderer -> BackgroundNode readback), once pinned to the
-// CPU rung and once to the DMA-BUF rung, comparing every rendered frame of the
-// second against a golden frame taken from the first. That comparison is the
-// content proof for the zero-copy path -- the imported texture must decode to
-// the same pixels the host-staged upload produced, which a frame count or a
-// non-black check cannot show.
+// renderer cells on top, driving the real product path (V4L2CaptureNode ->
+// DMACaptureInputNode renderer -> BackgroundNode readback) three times:
+//   cpu/still     the reference. vivid's OSD counter is switched off so the
+//                 source repeats exactly; the first frame becomes the golden.
+//   dmabuf/still  content proof: every rendered frame is compared against that
+//                 golden. The imported texture must decode to the same pixels
+//                 the host-staged upload produced -- which a frame count or a
+//                 non-black check cannot show.
+//   dmabuf/live   liveness proof: with the OSD counter back on, every source
+//                 frame differs, so counting readbacks that changed separates
+//                 "buffers keep circulating" from "one buffer redrawn forever",
+//                 which is what a broken borrowed-buffer requeue looks like.
 //
 //   V4L2CaptureTest --api opengl --device /dev/video0
 //   V4L2CaptureTest --api vulkan --seconds 4
@@ -345,10 +350,12 @@ Result runCell(
 // Renderer cells: the real product path, per capture rung.
 // ---------------------------------------------------------------------------
 
-/// vivid stamps a per-frame counter over the test pattern, which would make a
-/// golden-frame comparison meaningless. Best-effort: turn it off if the control
-/// exists (it does not on a real camera, where --expect any applies instead).
-bool silenceOsdText(const std::string& path)
+/// vivid stamps a per-frame counter over the test pattern. Off, the source is
+/// bit-identical frame to frame, which is what makes a golden-frame comparison
+/// exact; on, every frame differs, which is what makes the liveness cell able
+/// to tell "buffers are still circulating" from "the picture froze".
+/// Best-effort: the control does not exist on a real camera.
+bool setOsdText(const std::string& path, bool off)
 {
   const int fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
   if(fd < 0)
@@ -362,15 +369,16 @@ bool silenceOsdText(const std::string& path)
     if(name.find("OSD Text Mode") != std::string::npos)
     {
       // The menu is ordered All / Counters Only / None; pick by label rather
-      // than by index, since index 0 is "All" -- the opposite of what we want.
-      int want = q.maximum;
+      // than by index, since index 0 is "All" -- the opposite of "no text".
+      const char* label = off ? "None" : "All";
+      int want = off ? q.maximum : q.minimum;
       for(int v = q.minimum; v <= q.maximum; ++v)
       {
         v4l2_querymenu m{};
         m.id = q.id;
         m.index = std::uint32_t(v);
         if(::ioctl(fd, VIDIOC_QUERYMENU, &m) == 0
-           && std::string(reinterpret_cast<const char*>(m.name)) == "None")
+           && std::string(reinterpret_cast<const char*>(m.name)) == label)
         {
           want = v;
           break;
@@ -417,6 +425,11 @@ struct RenderCell
   double fps{};
   double meanLuma{};
   double minPsnr{-1}, meanPsnr{-1};
+  /// Readbacks whose content differed from the previous one. On a source whose
+  /// picture changes every frame this is the only thing that separates "frames
+  /// keep arriving" from "the last buffer is being redrawn forever" -- which is
+  /// exactly what a broken borrowed-buffer requeue looks like.
+  int distinct{};
   bool uniform{true};
   std::string verdict = "SKIP";
   bool pass{};
@@ -483,6 +496,7 @@ RenderCell runRenderCell(
   double psnrSum = 0, psnrMin = 99.0, lumaSum = 0;
   int psnrN = 0, lumaN = 0;
   bool dumped = false;
+  std::vector<std::uint8_t> prevGrid;
 
   QTimer render;
   render.setTimerType(Qt::PreciseTimer);
@@ -502,15 +516,20 @@ RenderCell runRenderCell(
 
     long sum = 0, n = 0;
     const std::uint8_t first = px[1];
+    std::vector<std::uint8_t> grid;
     for(int y = 0; y < h; y += std::max(1, h / 48))
       for(int x = 0; x < w; x += std::max(1, w / 48))
       {
         const auto g = px[(std::size_t(y) * w + x) * 4 + 1];
         if(g != first)
           r.uniform = false;
+        grid.push_back(g);
         sum += g;
         ++n;
       }
+    if(!prevGrid.empty() && grid != prevGrid)
+      r.distinct++;
+    prevGrid = std::move(grid);
     lumaSum += double(sum) / double(std::max(1L, n));
     lumaN++;
 
@@ -710,12 +729,13 @@ int main(int argc, char** argv)
   score::MinimalGUIApplication app(argc, argv);
 
   std::printf(
-      "\n%-14s %-10s %-22s %6s %6s %8s %8s %8s %s\n", "device", "pin",
-      "engaged-rung", "frames", "fps", "luma", "minPSNR", "meanPSNR", "verdict");
+      "\n%-14s %-11s %-22s %6s %6s %8s %8s %8s %8s %s\n", "device", "pin",
+      "engaged-rung", "frames", "fps", "luma", "distinct", "minPSNR",
+      "meanPSNR", "verdict");
   std::vector<RenderCell> cells;
   for(const auto& d : devices)
   {
-    const bool osdOff = silenceOsdText(d.path);
+    const bool hasOsd = setOsdText(d.path, /*off=*/true);
 
     std::vector<std::uint8_t> golden;
     auto ref = runRenderCell(d, a, api, "cpu", {}, &golden);
@@ -732,9 +752,11 @@ int main(int argc, char** argv)
     }
     cells.push_back(ref);
 
-    // Cross-run comparison is only meaningful for a source that repeats: vivid
-    // does once its OSD counter is off, a live camera does not.
-    const bool comparable = osdOff && d.driver == "vivid" && ref.pass;
+    // Cross-run comparison is only meaningful for a source that repeats. The
+    // reference cell measured that directly by comparing its own frames, so
+    // the gate is its self-PSNR rather than a driver name: vivid with its OSD
+    // counter off is bit-exact, a live camera with auto-exposure is not.
+    const bool comparable = ref.pass && ref.minPsnr >= 20.0;
     auto gpu = runRenderCell(
         d, a, api, "dmabuf", comparable ? golden : std::vector<std::uint8_t>{},
         nullptr);
@@ -751,20 +773,45 @@ int main(int argc, char** argv)
       gpu.verdict = "FAIL(black-or-uniform)";
     else if(comparable && gpu.minPsnr < floorPsnr)
       gpu.verdict = "FAIL(content-mismatch)";
+    else if(!hasOsd && ref.distinct > 0 && gpu.distinct < 2)
+      // No OSD control to force a changing picture, but the source moved on its
+      // own during the reference cell: the zero-copy cell must move too, or
+      // slots stopped being handed back and one frame is being redrawn.
+      gpu.verdict = "FAIL(frozen)";
     else
     {
       gpu.pass = true;
       gpu.verdict = comparable ? "PASS(matches-cpu)" : "PASS(content-only)";
     }
     cells.push_back(gpu);
+
+    if(!hasOsd || !gpu.pass)
+      continue;
+    // Liveness: a source whose picture changes every frame. If the strategy
+    // stopped handing slots back the driver would run out of buffers and the
+    // renderer would keep redrawing the last one it bound.
+    setOsdText(d.path, /*off=*/false);
+    auto live = runRenderCell(d, a, api, "dmabuf", {}, nullptr);
+    live.pin = "dmabuf/live";
+    if(live.pinUnmet || live.engaged.find("dmabuf") == std::string::npos)
+      live.verdict = "SKIP(no-dmabuf-import: " + live.engaged + ")";
+    else if(live.distinct < 2)
+      live.verdict = "FAIL(frozen)";
+    else
+    {
+      live.pass = true;
+      live.verdict = "PASS(live)";
+    }
+    cells.push_back(live);
+    setOsdText(d.path, /*off=*/true);
   }
 
   for(const auto& c : cells)
   {
     std::printf(
-        "%-14s %-10s %-22s %6d %6.1f %8.1f %8.2f %8.2f %s\n", c.device.c_str(),
-        c.pin.c_str(), c.engaged.c_str(), c.frames, c.fps, c.meanLuma,
-        c.minPsnr, c.meanPsnr, c.verdict.c_str());
+        "%-14s %-11s %-22s %6d %6.1f %8.1f %8d %8.2f %8.2f %s\n",
+        c.device.c_str(), c.pin.c_str(), c.engaged.c_str(), c.frames, c.fps,
+        c.meanLuma, c.distinct, c.minPsnr, c.meanPsnr, c.verdict.c_str());
     if(c.pass)
       passed++;
     else if(c.verdict.rfind("SKIP", 0) == 0)
