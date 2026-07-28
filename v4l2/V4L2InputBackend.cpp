@@ -31,16 +31,27 @@ VideoPixelFormat neutralFromV4L2Fourcc(std::uint32_t f) noexcept
       return VideoPixelFormat::YVYU422;
     case V4L2_PIX_FMT_VYUY:
       return VideoPixelFormat::VYUY422;
-    // NOTE: multi-plane formats (NV12/NV21/NV16/NV24/NV42, YUV420P, YUV422P)
-    // are deliberately NOT mapped here. CpuStagedCapture uploads exactly one
-    // QRhiTextureUploadEntry, while the planar decoders allocate 2-3 plane
-    // textures, so only Y is ever populated and the chroma planes sample
-    // garbage -- measured against ffmpeg on vivid: NV12 6.07 dB, 422P 6.58 dB,
-    // YU12 6.53 dB, all visibly green. NV12 had been mapped since the original
-    // V4L2 work and was broken the whole time; it is removed here rather than
-    // left shipping wrong pixels. The decoders themselves are correct and are
-    // wired in makeWireDecoder for capture paths that do upload planes.
-    // Re-map these once CpuStagedCapture grows per-plane upload.
+    // Planar formats: CpuStagedCapture uploads each plane from its own
+    // offset inside the contiguous capture buffer, derived from the decoder's
+    // own texture geometry.
+    case V4L2_PIX_FMT_NV12:
+      return VideoPixelFormat::NV12;
+    case V4L2_PIX_FMT_NV21:
+      return VideoPixelFormat::NV21;
+    case V4L2_PIX_FMT_NV16:
+      return VideoPixelFormat::NV16;
+    case V4L2_PIX_FMT_NV61:
+      return VideoPixelFormat::NV61;
+    case V4L2_PIX_FMT_NV24:
+      return VideoPixelFormat::NV24;
+    case V4L2_PIX_FMT_NV42:
+      return VideoPixelFormat::NV42;
+    case V4L2_PIX_FMT_YUV420:
+      return VideoPixelFormat::YUV420P;
+    case V4L2_PIX_FMT_YVU420:
+      return VideoPixelFormat::YVU420P;
+    case V4L2_PIX_FMT_YUV422P:
+      return VideoPixelFormat::YUV422P;
     case V4L2_PIX_FMT_VUYA32:
       return VideoPixelFormat::VUYA;
     case V4L2_PIX_FMT_VUYX32:
