@@ -56,6 +56,14 @@ VideoPixelFormat neutralFromV4L2Fourcc(std::uint32_t f) noexcept
       return VideoPixelFormat::VUYA;
     case V4L2_PIX_FMT_VUYX32:
       return VideoPixelFormat::VUYX;
+    case V4L2_PIX_FMT_AYUV32:
+      return VideoPixelFormat::AYUV;
+    case V4L2_PIX_FMT_XYUV32:
+      return VideoPixelFormat::XYUV;
+    case V4L2_PIX_FMT_YUVA32:
+      return VideoPixelFormat::YUVA;
+    case V4L2_PIX_FMT_YUVX32:
+      return VideoPixelFormat::YUVX;
     // The eight 32-bit orderings differ only in where the alpha/padding byte
     // sits; the neutral names below describe MEMORY order, matching V4L2's.
     case V4L2_PIX_FMT_ARGB32:
@@ -87,10 +95,28 @@ VideoPixelFormat neutralFromV4L2Fourcc(std::uint32_t f) noexcept
     case V4L2_PIX_FMT_Y16:
     case V4L2_PIX_FMT_Z16:
       return VideoPixelFormat::Mono16;
+    case V4L2_PIX_FMT_Y16_BE:
+      return VideoPixelFormat::Mono16BE;
     case V4L2_PIX_FMT_BGR24:
       return VideoPixelFormat::BGR24;
     case V4L2_PIX_FMT_RGB24:
       return VideoPixelFormat::RGB24;
+    case V4L2_PIX_FMT_RGB332:
+      return VideoPixelFormat::RGB332;
+    case V4L2_PIX_FMT_RGB565:
+      return VideoPixelFormat::RGB565;
+    case V4L2_PIX_FMT_RGB565X:
+      return VideoPixelFormat::RGB565BE;
+    case V4L2_PIX_FMT_RGB555:
+      return VideoPixelFormat::RGB555;
+    case V4L2_PIX_FMT_RGB555X:
+      return VideoPixelFormat::RGB555BE;
+    case V4L2_PIX_FMT_ARGB555:
+      return VideoPixelFormat::ARGB1555;
+    case V4L2_PIX_FMT_RGB444:
+      return VideoPixelFormat::RGB444;
+    case V4L2_PIX_FMT_ARGB444:
+      return VideoPixelFormat::ARGB4444;
     default:
       // Compressed sources (MJPG/H264) land here on purpose: they need a
       // decode stage this path does not have, and silently treating them as
