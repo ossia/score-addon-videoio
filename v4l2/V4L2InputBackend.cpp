@@ -64,6 +64,12 @@ VideoPixelFormat neutralFromV4L2Fourcc(std::uint32_t f) noexcept
       return VideoPixelFormat::YUVA;
     case V4L2_PIX_FMT_YUVX32:
       return VideoPixelFormat::YUVX;
+    case V4L2_PIX_FMT_YUV444:
+      return VideoPixelFormat::AYUV4444;
+    case V4L2_PIX_FMT_YUV555:
+      return VideoPixelFormat::AYUV1555;
+    case V4L2_PIX_FMT_YUV565:
+      return VideoPixelFormat::YUV565;
     // The eight 32-bit orderings differ only in where the alpha/padding byte
     // sits; the neutral names below describe MEMORY order, matching V4L2's.
     case V4L2_PIX_FMT_ARGB32:
