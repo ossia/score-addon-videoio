@@ -344,10 +344,13 @@ void V4L2InputBackend::start()
   if(m_started || !m_session.isOpen() || !m_strategy)
     return;
 
-  if(m_gpuActive)
+  if(m_gpuActive || m_borrowed)
   {
-    // pickStrategy already brought the queue up in the exporting mode the
-    // strategy imported from; restarting it would invalidate those imports.
+    // pickStrategy already brought the queue up in the mode the strategy
+    // imported from; restarting it would invalidate those imports. For the
+    // USERPTR rung that is not merely wasteful: REQBUFS(0) frees the very pages
+    // the strategy handed to VK_EXT_external_memory_host, so the renderer would
+    // sample freed memory (observed as black frames, PSNR 4.61).
     if(!m_session.isStreaming())
       return;
   }
