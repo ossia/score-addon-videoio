@@ -221,7 +221,7 @@ V4L2InputBackend::pickStrategy(
 
   // Vulkan and EGL-backed GL are the only backends with a DMA-BUF import path.
   if(impl != QRhi::Vulkan && impl != QRhi::OpenGLES2)
-    return pickBorrowedHostImport(impl);
+    return {};
   if(!m_session.isOpen() || m_session.isStreaming())
     return {};
 
@@ -242,9 +242,9 @@ V4L2InputBackend::pickStrategy(
   {
     qDebug() << "V4L2: no dma-buf rung, VIDIOC_EXPBUF path failed:"
              << m_session.lastError().c_str();
-    // No EXPBUF is the common case (ProCapture, many UVC drivers). The driver's
-    // mmap'd pages can still be imported directly on Vulkan.
-    return pickBorrowedHostImport(impl);
+    // No EXPBUF is the common case (ProCapture, many UVC drivers); the node
+    // moves on to the host-import candidate.
+    return {};
   }
 
   std::vector<score::gfx::interop::DmaBufSlotDesc> descs;
@@ -272,8 +272,12 @@ V4L2InputBackend::pickBorrowedHostImport(QRhi::Implementation impl)
   // mmap always returns page-aligned addresses, which is what the import wants.
   if(impl != QRhi::Vulkan)
     return {};
-  if(!m_session.isOpen() || m_session.isStreaming())
+  if(!m_session.isOpen())
     return {};
+  // The dma-buf candidate may have left the queue streaming in MmapExport;
+  // this rung needs it re-started in MmapRead, and the two cannot coexist.
+  if(m_session.isStreaming())
+    m_session.stop();
   const auto caps = m_session.bufferCaps();
   if(!caps.probed || !caps.mmap)
     return {};
@@ -300,6 +304,20 @@ V4L2InputBackend::pickBorrowedHostImport(QRhi::Implementation impl)
       "V4L2", std::move(bufs));
   m_borrowed = strat.get();
   return strat;
+}
+
+std::vector<std::function<std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>()>>
+V4L2InputBackend::pickStrategies(
+    QRhi::Implementation impl, const score::gfx::interop::GpuCapabilities& caps)
+{
+  // Best first. The dma-buf rung is preferred where the driver exports (it is
+  // the only one that also works on GL), but NVIDIA accepts the fd and then
+  // refuses the import, so the host-import rung has to be reachable after it.
+  std::vector<std::function<std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>()>>
+      v;
+  v.emplace_back([this, impl, &caps] { return pickStrategy(impl, caps); });
+  v.emplace_back([this, impl] { return pickBorrowedHostImport(impl); });
+  return v;
 }
 
 std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>

@@ -36,6 +36,7 @@
 #include <Gfx/Graph/interop/VideoPixelFormat.hpp>
 
 #include <atomic>
+#include <functional>
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -83,6 +84,11 @@ public:
   /// MMAP + VK_EXT_external_memory_host rung, for drivers with no EXPBUF.
   std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
   pickBorrowedHostImport(QRhi::Implementation);
+
+  std::vector<std::function<std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>()>>
+  pickStrategies(
+      QRhi::Implementation,
+      const score::gfx::interop::GpuCapabilities&) override;
   std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
   makeCpuStrategy() override;
   void setStrategy(score::gfx::interop::VideoCaptureStrategy* s) noexcept override;
