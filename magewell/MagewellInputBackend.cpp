@@ -74,6 +74,14 @@ bool MagewellInputBackend::open()
                          ? 10000000.0 / status.dwFrameDuration
                          : 0.0;
   m_stride = strideFromFourcc(m_settings.fourcc, m_width);
+  // The SDK writes with whatever stride we ask for, so ask for one D3D12 can
+  // use: D3D12_PLACED_SUBRESOURCE_FOOTPRINT::RowPitch must be a multiple of 256,
+  // and the natural pitch is not at the commonest geometry -- 1080p NV12, RGB24
+  // and GREY are all 1920 or 5760, none of them 256-aligned. Padding the rows
+  // costs a few KB per frame and makes every format importable at every size.
+  // Harmless elsewhere: the decoder derives its texture geometry from the
+  // stride, and Vulkan/CPU paths do not care what it is.
+  m_stride = ((m_stride + 255u) / 256u) * 256u;
   m_frameByteSize
       = imageSizeFromFourcc(m_settings.fourcc, m_width, m_height, m_stride);
 
