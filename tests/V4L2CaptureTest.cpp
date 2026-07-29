@@ -58,6 +58,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+
+#include <sys/resource.h>
 #include <string>
 #include <vector>
 
@@ -448,6 +450,11 @@ struct RenderCell
   /// exactly what a broken borrowed-buffer requeue looks like.
   int distinct{};
   bool uniform{true};
+  /// Process CPU time consumed by this cell, per captured frame. This is the
+  /// metric that separates the rungs: they are all GPU/present-bound at 1080p,
+  /// so fps says nothing, while a removed per-frame memcpy shows up here
+  /// directly. User+sys, so the capture thread's copy is included.
+  double cpuMsPerFrame{};
   std::string verdict = "SKIP";
   bool pass{};
 };
@@ -469,6 +476,14 @@ RenderCell runRenderCell(
   RenderCell r;
   r.device = dev.path;
   r.pin = pin;
+
+  const auto cpuNow = [] {
+    rusage ru{};
+    getrusage(RUSAGE_SELF, &ru);
+    return (double(ru.ru_utime.tv_sec) + double(ru.ru_stime.tv_sec)) * 1e3
+           + (double(ru.ru_utime.tv_usec) + double(ru.ru_stime.tv_usec)) / 1e3;
+  };
+  const double cpuStart = cpuNow();
 
   V4L2InputSettings s;
   s.device = dev.path;
@@ -600,6 +615,7 @@ RenderCell runRenderCell(
   if(const char* n = in->engagedCaptureStrategy())
     r.engaged = n;
   r.pinUnmet = in->captureStrategyPinUnmet();
+  r.cpuMsPerFrame = r.frames > 0 ? (cpuNow() - cpuStart) / r.frames : 0.0;
 
   graph.reset();
   delete bg;
@@ -751,9 +767,9 @@ int main(int argc, char** argv)
   score::MinimalGUIApplication app(argc, argv);
 
   std::printf(
-      "\n%-14s %-11s %-22s %6s %6s %8s %8s %8s %8s %s\n", "device", "pin",
+      "\n%-14s %-11s %-22s %6s %6s %8s %8s %8s %8s %9s %s\n", "device", "pin",
       "engaged-rung", "frames", "fps", "luma", "distinct", "minPSNR",
-      "meanPSNR", "verdict");
+      "meanPSNR", "cpuMs/fr", "verdict");
   std::vector<RenderCell> cells;
   for(const auto& d : devices)
   {
@@ -844,9 +860,10 @@ int main(int argc, char** argv)
   for(const auto& c : cells)
   {
     std::printf(
-        "%-14s %-11s %-22s %6d %6.1f %8.1f %8d %8.2f %8.2f %s\n",
+        "%-14s %-11s %-22s %6d %6.1f %8.1f %8d %8.2f %8.2f %9.3f %s\n",
         c.device.c_str(), c.pin.c_str(), c.engaged.c_str(), c.frames, c.fps,
-        c.meanLuma, c.distinct, c.minPsnr, c.meanPsnr, c.verdict.c_str());
+        c.meanLuma, c.distinct, c.minPsnr, c.meanPsnr, c.cpuMsPerFrame,
+        c.verdict.c_str());
     if(c.pass)
       passed++;
     else if(c.verdict.rfind("SKIP", 0) == 0)
