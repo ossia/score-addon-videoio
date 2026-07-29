@@ -89,6 +89,18 @@ VideoPixelFormat neutralFromV4L2Fourcc(std::uint32_t f) noexcept
       return VideoPixelFormat::BGRA8;
     case V4L2_PIX_FMT_RGBA32: // V4L2 "AB24": R,G,B,A in memory
       return VideoPixelFormat::RGBA8;
+    // The two legacy 32-bit fourccs. V4L2 deprecated them precisely because
+    // their byte order was never pinned down, so these are what the hardware we
+    // have actually delivers, measured against a simultaneous RGB24 capture of
+    // the same source: 'BGR4' -> B,G,R,X and 'RGB4' -> R,G,B,X, i.e. both in
+    // name order with the pad last. A driver that disagrees is within its
+    // rights; it should be emitting the explicit fourccs above instead.
+    // Magewell ProCapture advertises ONLY these two for 32-bit, so without them
+    // its RGB modes are refused outright.
+    case V4L2_PIX_FMT_BGR32:
+      return VideoPixelFormat::BGRX8;
+    case V4L2_PIX_FMT_RGB32:
+      return VideoPixelFormat::RGBX8;
     // Single-channel sensors: greyscale industrial cameras and depth streams.
     // Z16 is 16-bit depth; decoded as mono luminance it is the wire format
     // rendered faithfully, which is what this layer is responsible for --
