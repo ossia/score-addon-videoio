@@ -42,6 +42,7 @@
 
 namespace score::gfx::interop
 {
+struct BorrowedHostImportCapture;
 struct VideoCaptureSlotRing;
 struct DmaBufImportCapture;
 }
@@ -75,7 +76,13 @@ public:
   std::unique_ptr<score::gfx::GPUVideoDecoder>
   makeDecoder(Video::VideoMetadata& meta) override;
   std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
-  pickStrategy(QRhi::Implementation) override;
+  pickStrategy(
+      QRhi::Implementation,
+      const score::gfx::interop::GpuCapabilities&) override;
+
+  /// MMAP + VK_EXT_external_memory_host rung, for drivers with no EXPBUF.
+  std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
+  pickBorrowedHostImport(QRhi::Implementation);
   std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
   makeCpuStrategy() override;
   void setStrategy(score::gfx::interop::VideoCaptureStrategy* s) noexcept override;
@@ -94,6 +101,10 @@ private:
 
   Session m_session;
   score::gfx::interop::VideoCaptureStrategy* m_strategy{};
+  /// Set when the engaged rung borrows the driver's mmap'd buffers: the
+  /// capture loop must then requeue only what takeReturnedSlots() releases.
+  score::gfx::interop::BorrowedHostImportCapture* m_borrowed{};
+
   /// The GPU-direct strategy handed out by pickStrategy, kept typed so the
   /// capture loop can reach its slot-return channel. Non-owning; null until
   /// pickStrategy succeeds, and only *active* once the renderer settles on it.

@@ -344,8 +344,14 @@ private:
  */
 std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
 pickAjaCaptureStrategy(
-    QRhi::Implementation backend, CNTV2Card* card, AJAInputPixelFormat pixfmt)
+    QRhi::Implementation backend, CNTV2Card* card, AJAInputPixelFormat pixfmt,
+    const score::gfx::interop::GpuCapabilities& caps)
 {
+  // Both rungs below are NVIDIA-only (DVP, and RDMA through CUDA). A GPU that
+  // is positively another vendor can only fail their init, after advising the
+  // user to reconfigure for a path it cannot run.
+  if(caps.rulesOutNvidiaPaths())
+    return nullptr;
   // Optional override to validate each fallback in isolation:
   //   SCORE_AJA_FORCE_INTEROP = cpu | dvp | rdma   (empty/unset = auto).
   // "cpu" returns null so the GPU-direct node produces nothing (the CPU
@@ -452,9 +458,11 @@ public:
   }
 
   std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
-  pickStrategy(QRhi::Implementation backend) override
+  pickStrategy(
+      QRhi::Implementation backend,
+      const score::gfx::interop::GpuCapabilities& caps) override
   {
-    return pickAjaCaptureStrategy(backend, m_capture.card(), m_pixfmt);
+    return pickAjaCaptureStrategy(backend, m_capture.card(), m_pixfmt, caps);
   }
 
   std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>

@@ -429,13 +429,19 @@ DeckLinkInputBackend::makeCpuStrategy()
 }
 
 std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
-DeckLinkInputBackend::pickStrategy(QRhi::Implementation impl)
+DeckLinkInputBackend::pickStrategy(
+    QRhi::Implementation impl, const score::gfx::interop::GpuCapabilities& caps)
 {
   // NVIDIA-DVP GPU-direct via the shared shim. The InputCallback CPU-memcpies
   // each frame into the strategy's slot buffer (no card DMA into sysmem), so
   // the no-op DMA-lock policy is correct. GL + D3D11 only; other backends fall
   // back to the host-staged DeckLinkCpuCapture (makeCpuStrategy).
 #if defined(VIDEOIO_DECKLINK_DVP_GL) || defined(VIDEOIO_DECKLINK_DVP_D3D11)
+  // DVP is NVIDIA's. Offering it on a GPU that positively is not NVIDIA costs a
+  // failed init and makes DvpCaptureGl tell the user to set
+  // QT_XCB_GL_INTEGRATION=xcb_glx for a path their card cannot run at all.
+  if(caps.rulesOutNvidiaPaths())
+    return {};
   const NvDvpFormat fmt = deckLinkDvpFormat(m_settings.pixelFormat);
   switch(impl)
   {

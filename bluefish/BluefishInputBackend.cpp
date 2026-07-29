@@ -117,7 +117,8 @@ BluefishInputBackend::makeDecoder(Video::VideoMetadata& meta)
 }
 
 std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
-BluefishInputBackend::pickStrategy(QRhi::Implementation)
+BluefishInputBackend::pickStrategy(
+    QRhi::Implementation, const score::gfx::interop::GpuCapabilities&)
 {
   // BlueGpuDirect (GPU-direct capture) is out of scope; always host-staged.
   return {};

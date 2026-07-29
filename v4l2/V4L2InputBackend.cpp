@@ -3,6 +3,7 @@
 #include <v4l2/V4L2CpuCapture.hpp>
 
 #include <Gfx/Graph/decoders/WireDecoderFactory.hpp>
+#include <Gfx/Graph/interop/BorrowedHostImportCapture.hpp>
 #include <Gfx/Graph/interop/DmaBufImportCapture.hpp>
 #include <Gfx/Graph/interop/VideoCaptureStrategy.hpp>
 #include <Gfx/Graph/interop/VideoPixelFormatAV.hpp>
@@ -210,14 +211,17 @@ V4L2InputBackend::makeDecoder(Video::VideoMetadata& meta)
 }
 
 std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
-V4L2InputBackend::pickStrategy(QRhi::Implementation impl)
+V4L2InputBackend::pickStrategy(
+    QRhi::Implementation impl, const score::gfx::interop::GpuCapabilities&)
 {
   m_gpu = nullptr;
   m_gpuActive = false;
 
+  m_borrowed = nullptr;
+
   // Vulkan and EGL-backed GL are the only backends with a DMA-BUF import path.
   if(impl != QRhi::Vulkan && impl != QRhi::OpenGLES2)
-    return {};
+    return pickBorrowedHostImport(impl);
   if(!m_session.isOpen() || m_session.isStreaming())
     return {};
 
@@ -236,9 +240,11 @@ V4L2InputBackend::pickStrategy(QRhi::Implementation impl)
   const std::size_t slots = std::max<std::size_t>(m_settings.slotCount, 8u);
   if(!m_session.start(BufferMode::MmapExport, slots))
   {
-    qDebug() << "V4L2: no GPU-direct rung, VIDIOC_EXPBUF path failed:"
+    qDebug() << "V4L2: no dma-buf rung, VIDIOC_EXPBUF path failed:"
              << m_session.lastError().c_str();
-    return {};
+    // No EXPBUF is the common case (ProCapture, many UVC drivers). The driver's
+    // mmap'd pages can still be imported directly on Vulkan.
+    return pickBorrowedHostImport(impl);
   }
 
   std::vector<score::gfx::interop::DmaBufSlotDesc> descs;
@@ -253,6 +259,46 @@ V4L2InputBackend::pickStrategy(QRhi::Implementation impl)
   auto strat = std::make_unique<score::gfx::interop::DmaBufImportCapture>(
       "V4L2", std::move(descs));
   m_gpu = strat.get();
+  return strat;
+}
+
+std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
+V4L2InputBackend::pickBorrowedHostImport(QRhi::Implementation impl)
+{
+  // Second-best rung, for the many drivers that grant MMAP buffers but have no
+  // VIDIOC_EXPBUF (Magewell ProCapture among them, measured). The driver's own
+  // mmap'd pages are imported once and the GPU DMAs out of them, so the
+  // per-frame memcpy from the mapping into a staging slot disappears.
+  // mmap always returns page-aligned addresses, which is what the import wants.
+  if(impl != QRhi::Vulkan)
+    return {};
+  if(!m_session.isOpen() || m_session.isStreaming())
+    return {};
+  const auto caps = m_session.bufferCaps();
+  if(!caps.probed || !caps.mmap)
+    return {};
+  if(m_session.format().planeCount != 1)
+    return {};
+
+  const std::size_t slots = std::max<std::size_t>(m_settings.slotCount, 8u);
+  if(!m_session.start(BufferMode::MmapRead, slots))
+  {
+    qDebug() << "V4L2: MMAP host-import rung unavailable:"
+             << m_session.lastError().c_str();
+    return {};
+  }
+
+  std::vector<score::gfx::interop::BorrowedHostBuffer> bufs;
+  bufs.reserve(m_session.slotCount());
+  for(std::size_t i = 0; i < m_session.slotCount(); ++i)
+  {
+    const auto& s = m_session.slot(i);
+    bufs.push_back({s.mapped[0], s.mappedSize[0]});
+  }
+
+  auto strat = std::make_unique<score::gfx::interop::BorrowedHostImportCapture>(
+      "V4L2", std::move(bufs));
+  m_borrowed = strat.get();
   return strat;
 }
 
@@ -273,6 +319,12 @@ void V4L2InputBackend::setStrategy(
   // GPU strategy (it owns it), so the typed pointer must not outlive it.
   if(!m_gpuActive)
     m_gpu = nullptr;
+  // Same for the borrowed-buffer rung: if it is not the one the renderer kept,
+  // the capture loop must go back to copy-and-requeue rather than hold buffers
+  // for a strategy that no longer exists.
+  if(s == nullptr
+     || s != static_cast<score::gfx::interop::VideoCaptureStrategy*>(m_borrowed))
+    m_borrowed = nullptr;
 }
 
 void V4L2InputBackend::start()
@@ -394,6 +446,29 @@ void V4L2InputBackend::runLoopStaged()
         int(score::gfx::interop::toAVPixelFormat(
             neutralFromV4L2Fourcc(fmt.fourcc))),
         0.0);
+
+    if(m_borrowed)
+    {
+      // The renderer samples this very mapping, so the buffer must NOT go back
+      // to the driver yet; it is requeued only once takeReturnedSlots() says
+      // the GPU is done with it. The slot index is the driver's own, not a
+      // rolling write index.
+      if(!m_borrowed->ingestFrame(std::size_t(idx)))
+      {
+        m_session.requeue(std::size_t(idx));
+        continue;
+      }
+      m_ring.latestSlot.store(std::size_t(idx), std::memory_order_release);
+      m_ring.latestFrameId.fetch_add(1, std::memory_order_release);
+
+      for(std::uint32_t freed = m_borrowed->takeReturnedSlots(); freed;)
+      {
+        const unsigned bit = static_cast<unsigned>(__builtin_ctz(freed));
+        freed &= freed - 1u;
+        m_session.requeue(std::size_t(bit));
+      }
+      continue;
+    }
 
     if(void* dst = strat->slotBuffer(writeIdx))
     {

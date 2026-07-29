@@ -103,7 +103,8 @@ MagewellInputBackend::makeDecoder(Video::VideoMetadata& meta)
 }
 
 std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
-MagewellInputBackend::pickStrategy(QRhi::Implementation)
+MagewellInputBackend::pickStrategy(
+    QRhi::Implementation, const score::gfx::interop::GpuCapabilities&)
 {
   // Magewell has no GPU-direct capture path; always host-staged.
   return {};
