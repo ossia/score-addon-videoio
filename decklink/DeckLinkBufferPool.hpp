@@ -33,6 +33,8 @@
 
 #include <decklink/DeckLink.hpp>
 
+#include <Gfx/Graph/interop/VkHostImportUpload.hpp>
+
 #include <QDebug>
 
 #include <atomic>
@@ -63,8 +65,11 @@ public:
     m_slots.resize(count);
     for(auto& s : m_slots)
     {
-      void* p = nullptr;
-      if(::posix_memalign(&p, 4096, m_bytes) != 0 || !p)
+      // The shared page-aligned allocator, which is _aligned_malloc on Windows
+      // and posix_memalign elsewhere -- the same one CpuStagedCapture's slots
+      // use, so a pool buffer is importable wherever a slot is.
+      void* p = score::gfx::interop::alignedSlotAlloc(m_bytes, 4096);
+      if(!p)
       {
         destroy();
         return false;
@@ -78,7 +83,7 @@ public:
   void destroy()
   {
     for(auto& s : m_slots)
-      ::free(s.mem);
+      score::gfx::interop::alignedSlotFree(s.mem);
     m_slots.clear();
     m_bytes = 0;
   }
@@ -215,7 +220,7 @@ public:
   }
 
 private:
-  ~DeckLinkPooledBuffer() override = default;
+  ~DeckLinkPooledBuffer() = default;
   DeckLinkBufferPool& m_pool;
   std::size_t m_index;
   std::atomic<int> m_ref{1};
@@ -285,7 +290,7 @@ public:
   int allocCalls() const noexcept { return m_allocCalls; }
 
 private:
-  ~DeckLinkPoolAllocator() override = default;
+  ~DeckLinkPoolAllocator() = default;
   DeckLinkBufferPool& m_pool;
   std::atomic<int> m_ref{1};
   int m_allocCalls{};
@@ -355,7 +360,7 @@ public:
   bool declined() const noexcept { return m_declined; }
 
 private:
-  ~DeckLinkAllocatorProvider() override = default;
+  ~DeckLinkAllocatorProvider() = default;
   DeckLinkBufferPool& m_pool;
   std::uint32_t m_expectRowBytes{};
   std::atomic<int> m_ref{1};
