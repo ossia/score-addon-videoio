@@ -1,10 +1,13 @@
 #include <decklink/DeckLinkInputBackend.hpp>
 
+#include <decklink/DeckLinkBufferPool.hpp>
+
 #include <decklink/DeckLinkCpuCapture.hpp>
 #include <decklink/DeckLinkDevices.hpp>
 #include <decklink/DeckLinkFormats.hpp>
 
 #include <Gfx/Graph/decoders/WireDecoderFactory.hpp>
+#include <Gfx/Graph/interop/BorrowedHostImportCapture.hpp>
 #include <Gfx/Graph/interop/VideoCaptureStrategy.hpp>
 #include <Gfx/Graph/interop/VideoPixelFormatAV.hpp>
 
@@ -72,8 +75,12 @@ public:
       IDeckLinkInput* input, DeckLinkInputSettings settings,
       score::gfx::interop::VideoCaptureStrategy** strategy,
       score::gfx::interop::VideoCaptureSlotRing& ring,
-      std::uint32_t frameByteSize, int rowBytes, int height)
-      : m_input{input}
+      std::uint32_t frameByteSize, int rowBytes, int height,
+      DeckLinkBufferPool* pool,
+      score::gfx::interop::BorrowedHostImportCapture* borrowed)
+      : m_pool{pool}
+      , m_borrowed{borrowed}
+      , m_input{input}
       , m_inputSettings{settings}
       , m_strategy{strategy}
       , m_ring{ring}
@@ -197,6 +204,39 @@ public:
     void* src = nullptr;
     const HRESULT hr = buf->GetBytes(&src);
 
+    // Zero-copy: the card DMA'd into one of our pooled buffers, which the
+    // strategy has already imported, so publishing the index is the whole job.
+    // indexOf misses when the SDK declined the provider and allocated its own
+    // frame -- then the copy path below runs, unchanged.
+    if(SUCCEEDED(hr) && src && m_pool && m_borrowed)
+    {
+      const int pooled = m_pool->indexOf(src);
+      if(pooled >= 0)
+      {
+        m_pool->rendererTook(std::size_t(pooled));
+        if(m_borrowed->ingestFrame(std::size_t(pooled)))
+        {
+          m_ring.latestSlot.store(std::size_t(pooled), std::memory_order_release);
+          m_ring.latestFrameId.fetch_add(1, std::memory_order_release);
+        }
+        else
+        {
+          m_pool->rendererReturned(std::size_t(pooled));
+        }
+        // Buffers the GPU has finished with become allocatable again. Until
+        // both this and the SDK's own Release have happened the pool keeps them
+        // out of circulation.
+        for(std::uint32_t freed = m_borrowed->takeReturnedSlots(); freed;)
+        {
+          const unsigned bit = static_cast<unsigned>(__builtin_ctz(freed));
+          freed &= freed - 1u;
+          m_pool->rendererReturned(bit);
+        }
+        buf->EndAccess(bmdBufferAccessRead);
+        return S_OK;
+      }
+    }
+
     const std::size_t slot = m_slot;
     if(SUCCEEDED(hr) && src)
     {
@@ -233,6 +273,9 @@ public:
   }
 
 private:
+  DeckLinkBufferPool* m_pool{};
+  score::gfx::interop::BorrowedHostImportCapture* m_borrowed{};
+
   // ~half a second at 60p; placeholder frames keep arriving at mode rate
   // while unlocked, so the streak advances even with no signal.
   static constexpr int kRearmAfterNoSource = 25;
@@ -387,11 +430,24 @@ bool DeckLinkInputBackend::open()
   // own previous run — gets a transient failure here, more often on HDMI where
   // the RX front-end also retrains. One failed call must not condemn the whole
   // capture to the silent black-frame path, so retry with a short backoff.
+  // Our own frame memory, so the card DMAs into pages the renderer can import
+  // instead of into SDK frames the callback would have to copy out of. Depth
+  // covers the SDK's own queue plus the frames the renderer holds while the GPU
+  // reads them; the provider declines if the SDK asks for a geometry the pool
+  // does not match, and the copy path then runs unchanged.
+  if(m_pool.create(kPoolDepth, m_frameByteSize))
+    m_provider = new DeckLinkAllocatorProvider(
+        m_pool, static_cast<std::uint32_t>(m_rowBytes));
+
   HRESULT hr = E_FAIL;
   for(int attempt = 0; attempt < 20; ++attempt)
   {
-    hr = m_input->EnableVideoInput(
-        m_settings.displayMode, m_settings.pixelFormat, m_enableFlags);
+    hr = m_provider ? m_input->EnableVideoInputWithAllocatorProvider(
+             m_settings.displayMode, m_settings.pixelFormat, m_enableFlags,
+             m_provider)
+                    : m_input->EnableVideoInput(
+                          m_settings.displayMode, m_settings.pixelFormat,
+                          m_enableFlags);
     if(hr == S_OK)
       return true;
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -420,6 +476,48 @@ DeckLinkInputBackend::makeDecoder(Video::VideoMetadata& meta)
 {
   return score::gfx::makeWireDecoder(
       toNeutralFormat(m_settings.pixelFormat), meta);
+}
+
+std::vector<std::function<std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>()>>
+DeckLinkInputBackend::pickStrategies(
+    QRhi::Implementation impl, const score::gfx::interop::GpuCapabilities& caps)
+{
+  std::vector<std::function<std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>()>>
+      v;
+  // Best first: the card DMA'd straight into these pages, so if Vulkan can
+  // import them nothing copies at all.
+  v.emplace_back([this, impl] { return pickPoolBorrowed(impl); });
+  v.emplace_back([this, impl, &caps] { return pickStrategy(impl, caps); });
+  return v;
+}
+
+std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
+DeckLinkInputBackend::pickPoolBorrowed(QRhi::Implementation impl)
+{
+  m_borrowed = nullptr;
+  if(impl != QRhi::Vulkan)
+    return {};
+  // The provider is only useful if the SDK actually took it: a declined or
+  // never-consulted provider means the frames are the SDK's own memory and
+  // indexOf would miss on every one of them.
+  if(!m_provider || !m_provider->wasAsked() || m_provider->declined())
+  {
+    if(m_provider && !m_provider->wasAsked())
+      qDebug() << "DeckLink: the SDK never asked for an allocator; no pooled rung";
+    return {};
+  }
+  if(m_pool.count() == 0)
+    return {};
+
+  std::vector<score::gfx::interop::BorrowedHostBuffer> bufs;
+  bufs.reserve(m_pool.count());
+  for(std::size_t i = 0; i < m_pool.count(); ++i)
+    bufs.push_back({m_pool.buffer(i), m_pool.bufferBytes()});
+
+  auto strat = std::make_unique<score::gfx::interop::BorrowedHostImportCapture>(
+      "DeckLink", std::move(bufs));
+  m_borrowed = strat.get();
+  return strat;
 }
 
 std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
@@ -472,7 +570,7 @@ void DeckLinkInputBackend::start()
     return;
   auto* cb = new InputCallback(
       m_input.get(), m_settings, &m_strategy, m_ring, m_frameByteSize,
-      m_rowBytes, m_height);
+      m_rowBytes, m_height, m_pool.count() ? &m_pool : nullptr, m_borrowed);
   cb->m_enabledFlags = m_enableFlags;
   m_cbStopping = &cb->stopping;
   m_callback = ComPtr<IDeckLinkInputCallback>(cb); // adopt ref

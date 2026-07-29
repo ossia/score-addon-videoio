@@ -2,6 +2,8 @@
 #include <decklink/DeckLink.hpp>
 #include <decklink/DeckLinkComPtr.hpp>
 
+#include <decklink/DeckLinkBufferPool.hpp>
+
 #include <Gfx/Graph/DMACaptureInputNode.hpp>
 
 #include <atomic>
@@ -10,6 +12,7 @@
 namespace score::gfx::interop
 {
 struct VideoCaptureSlotRing;
+struct BorrowedHostImportCapture;
 }
 
 namespace Gfx::DeckLink
@@ -57,12 +60,26 @@ public:
   pickStrategy(
       QRhi::Implementation impl,
       const score::gfx::interop::GpuCapabilities& caps) override;
+
+  std::vector<std::function<std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>()>>
+  pickStrategies(
+      QRhi::Implementation,
+      const score::gfx::interop::GpuCapabilities&) override;
   std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
   makeCpuStrategy() override;
   void setStrategy(score::gfx::interop::VideoCaptureStrategy* s) noexcept override
   {
     m_strategy = s;
+    // The callback only takes the pooled path while the renderer is actually on
+    // that rung; anything else and it must go back to copying.
+    if(s == nullptr
+       || s != reinterpret_cast<score::gfx::interop::VideoCaptureStrategy*>(m_borrowed))
+      m_borrowed = nullptr;
   }
+
+  /// Zero-copy rung over the pool the card DMAs into (Vulkan only).
+  std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
+  pickPoolBorrowed(QRhi::Implementation);
   void start() override;
   void stop() override;
 
@@ -83,6 +100,13 @@ private:
   int m_rowBytes{};
   uint32_t m_frameByteSize{};
   BMDVideoInputFlags m_enableFlags{};
+  /// Frame memory we own and the card DMAs into, so no copy is needed.
+  static constexpr std::size_t kPoolDepth = 8;
+  DeckLinkBufferPool m_pool;
+  DeckLinkAllocatorProvider* m_provider{};
+  /// Set only while the renderer is on the rung that samples the pool.
+  score::gfx::interop::BorrowedHostImportCapture* m_borrowed{};
+
   /// Owned by the callback; lets stop() park its re-arm logic first.
   std::atomic<bool>* m_cbStopping{};
   bool m_started{};
