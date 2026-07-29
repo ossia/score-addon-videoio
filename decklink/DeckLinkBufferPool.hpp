@@ -65,10 +65,10 @@ public:
     m_slots.resize(count);
     for(auto& s : m_slots)
     {
-      // The shared page-aligned allocator, which is _aligned_malloc on Windows
-      // and posix_memalign elsewhere -- the same one CpuStagedCapture's slots
-      // use, so a pool buffer is importable wherever a slot is.
-      void* p = score::gfx::interop::alignedSlotAlloc(m_bytes, 4096);
+      // importableAlloc, not alignedSlotAlloc: on Windows D3D12 refuses
+      // _aligned_malloc memory and needs a 64 KB-granularity VirtualAlloc
+      // address. Vulkan accepts either, so this one allocator serves both rungs.
+      void* p = score::gfx::interop::importableAlloc(m_bytes);
       if(!p)
       {
         destroy();
@@ -83,7 +83,7 @@ public:
   void destroy()
   {
     for(auto& s : m_slots)
-      score::gfx::interop::alignedSlotFree(s.mem);
+      score::gfx::interop::importableFree(s.mem);
     m_slots.clear();
     m_bytes = 0;
   }

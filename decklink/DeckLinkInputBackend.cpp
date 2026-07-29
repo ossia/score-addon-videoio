@@ -8,6 +8,7 @@
 
 #include <Gfx/Graph/decoders/WireDecoderFactory.hpp>
 #include <Gfx/Graph/interop/BorrowedHostImportCapture.hpp>
+#include <Gfx/Graph/interop/D3D12HostImportUpload.hpp>
 #include <Gfx/Graph/interop/VideoCaptureStrategy.hpp>
 #include <Gfx/Graph/interop/VideoPixelFormatAV.hpp>
 
@@ -495,7 +496,16 @@ std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
 DeckLinkInputBackend::pickPoolBorrowed(QRhi::Implementation impl)
 {
   m_borrowed = nullptr;
-  if(impl != QRhi::Vulkan)
+  // QRhi::D3D12 only exists from Qt 6.6; older builds simply have no such
+  // backend to select, so the guard costs nothing there.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
+  const bool importable = (impl == QRhi::Vulkan || impl == QRhi::D3D12);
+  const bool isD3D12 = (impl == QRhi::D3D12);
+#else
+  const bool importable = (impl == QRhi::Vulkan);
+  const bool isD3D12 = false;
+#endif
+  if(!importable)
     return {};
   // The provider is only useful if the SDK actually took it: a declined or
   // never-consulted provider means the frames are the SDK's own memory and
@@ -508,6 +518,18 @@ DeckLinkInputBackend::pickPoolBorrowed(QRhi::Implementation impl)
   }
   if(m_pool.count() == 0)
     return {};
+  // D3D12 builds its copy footprint from the card's row pitch, which we do not
+  // choose -- the SDK dictates rowBytes. 12BitRGB at 1280/1920/3840 and v210 at
+  // 1280/2048 are not 256-aligned and are refused here rather than relying on a
+  // driver that merely tolerates them; the ladder then takes the staged rung.
+  if(isD3D12
+     && !score::gfx::interop::D3D12HostImportUpload::pitchUsable(
+         std::size_t(m_rowBytes)))
+  {
+    qDebug() << "DeckLink: row pitch" << m_rowBytes
+             << "unusable for the D3D12 host-import rung; staying staged";
+    return {};
+  }
 
   std::vector<score::gfx::interop::BorrowedHostBuffer> bufs;
   bufs.reserve(m_pool.count());
