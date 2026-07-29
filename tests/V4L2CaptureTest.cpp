@@ -784,16 +784,23 @@ int main(int argc, char** argv)
     // the gate is its self-PSNR rather than a driver name: vivid with its OSD
     // counter off is bit-exact, a live camera with auto-exposure is not.
     const bool comparable = ref.pass && ref.minPsnr >= 20.0;
+
+    // The two GPU rungs are mutually exclusive per device: a driver with
+    // VIDIOC_EXPBUF gets the dma-buf import, one without it (ProCapture, most
+    // UVC) gets the MMAP host-import. Sweeping both and reporting whichever
+    // engages keeps one table for every device instead of a per-driver script.
+    for(const char* rung : {"dmabuf", "borrowed"})
+    {
     auto gpu = runRenderCell(
-        d, a, api, "dmabuf", comparable ? golden : std::vector<std::uint8_t>{},
+        d, a, api, rung, comparable ? golden : std::vector<std::uint8_t>{},
         nullptr);
     // The zero-copy frames must be at least as faithful to the reference frame
     // as the CPU rung's own frames were -- an absolute threshold would either
     // pass a broken import on a noisy source or fail a correct one.
     const double floorPsnr
         = ref.minPsnr > 0 ? std::max(6.0, ref.minPsnr - 3.0) : 30.0;
-    if(gpu.pinUnmet || gpu.engaged.find("dmabuf") == std::string::npos)
-      gpu.verdict = "SKIP(no-dmabuf-import: " + gpu.engaged + ")";
+    if(gpu.pinUnmet || gpu.engaged.find(rung) == std::string::npos)
+      gpu.verdict = std::string("SKIP(no-") + rung + ": " + gpu.engaged + ")";
     else if(gpu.frames == 0)
       gpu.verdict = "FAIL(no-frames)";
     else if(degenerate(gpu))
@@ -818,10 +825,10 @@ int main(int argc, char** argv)
     // stopped handing slots back the driver would run out of buffers and the
     // renderer would keep redrawing the last one it bound.
     setOsdText(d.path, /*off=*/false);
-    auto live = runRenderCell(d, a, api, "dmabuf", {}, nullptr);
-    live.pin = "dmabuf/live";
-    if(live.pinUnmet || live.engaged.find("dmabuf") == std::string::npos)
-      live.verdict = "SKIP(no-dmabuf-import: " + live.engaged + ")";
+    auto live = runRenderCell(d, a, api, rung, {}, nullptr);
+    live.pin = std::string(rung) + "/live";
+    if(live.pinUnmet || live.engaged.find(rung) == std::string::npos)
+      live.verdict = std::string("SKIP(no-") + rung + ": " + live.engaged + ")";
     else if(live.distinct < 2)
       live.verdict = "FAIL(frozen)";
     else
@@ -831,6 +838,7 @@ int main(int argc, char** argv)
     }
     cells.push_back(live);
     setOsdText(d.path, /*off=*/true);
+    }
   }
 
   for(const auto& c : cells)
