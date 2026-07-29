@@ -56,6 +56,12 @@ enum class BufferMode
   MmapRead,     ///< mmap into host memory; CPU-staged fallback
   MmapExport,   ///< driver allocates, VIDIOC_EXPBUF gives us a DMA-BUF fd
   DmaBufImport, ///< we allocate via DmaBufAllocator, driver imports
+  /// We allocate page-aligned host pages and the driver DMAs into them.
+  /// The only V4L2 mode whose buffers are ordinary anonymous memory, and
+  /// therefore the only one importable through VK_EXT_external_memory_host --
+  /// an MMAP mapping is the device's own DMA memory, which
+  /// vkGetMemoryHostPointerPropertiesEXT refuses on both NVIDIA and RADV.
+  UserPtr,
 };
 
 SCORE_ADDON_VIDEOIO_EXPORT const char* toString(BufferMode) noexcept;
@@ -181,6 +187,11 @@ public:
   /// `DmaBufImport` and ignored otherwise.
   bool start(BufferMode mode, std::size_t slotCount,
              DmaBufAllocator* allocator = nullptr);
+
+  /// UserPtr only: the page-aligned buffer backing slot @p i, so the caller can
+  /// import it. Null in every other mode.
+  void* userBuffer(std::size_t i) const noexcept;
+  std::size_t userBufferSize() const noexcept;
   void stop();
   bool isStreaming() const noexcept;
 

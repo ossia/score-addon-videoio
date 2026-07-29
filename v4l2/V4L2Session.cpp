@@ -45,6 +45,8 @@ const char* toString(BufferMode m) noexcept
       return "mmap+expbuf";
     case BufferMode::DmaBufImport:
       return "dmabuf-import";
+    case BufferMode::UserPtr:
+      return "userptr";
   }
   return "?";
 }
@@ -82,6 +84,20 @@ struct Session::Impl
 
   DmaBufAllocator* allocator{};
   std::array<DmaBufAllocator::Buffer, kMaxSlots> external{};
+
+  /// UserPtr mode: page-aligned pages we own and the driver DMAs into.
+  std::array<void*, kMaxSlots> userBufs{};
+  std::size_t userBufSize{};
+
+  void freeUserBufs() noexcept
+  {
+    for(auto& p : userBufs)
+    {
+      ::free(p);
+      p = nullptr;
+    }
+    userBufSize = 0;
+  }
 
   std::uint64_t errFrames{}, dropFrames{};
   std::uint64_t lastSequence{};
@@ -126,14 +142,33 @@ struct Session::Impl
     }
   }
 
+  static std::uint32_t memoryOf(BufferMode m) noexcept
+  {
+    switch(m)
+    {
+      case BufferMode::DmaBufImport:
+        return V4L2_MEMORY_DMABUF;
+      case BufferMode::UserPtr:
+        return V4L2_MEMORY_USERPTR;
+      default:
+        return V4L2_MEMORY_MMAP;
+    }
+  }
+
   bool queueSlot(std::size_t i)
   {
     v4l2_buffer buf{};
     v4l2_plane planes[kMaxPlanes]{};
-    const std::uint32_t mem = (mode == BufferMode::DmaBufImport)
-                                  ? V4L2_MEMORY_DMABUF
-                                  : V4L2_MEMORY_MMAP;
+    const std::uint32_t mem = memoryOf(mode);
     prepareBuffer(buf, planes, i, mem);
+
+    if(mode == BufferMode::UserPtr)
+    {
+      // The driver DMAs into our pages; it needs the address and length back on
+      // every QBUF, unlike MMAP where the index alone identifies the buffer.
+      buf.m.userptr = reinterpret_cast<unsigned long>(userBufs[i]);
+      buf.length = static_cast<std::uint32_t>(userBufSize);
+    }
 
     if(mode == BufferMode::DmaBufImport)
     {
@@ -168,9 +203,8 @@ struct Session::Impl
   void abortStart() noexcept
   {
     unmapAll();
-    const std::uint32_t mem = (mode == BufferMode::DmaBufImport) ? V4L2_MEMORY_DMABUF
-                                                                 : V4L2_MEMORY_MMAP;
-    reqbufs(0, mem, nullptr);
+    reqbufs(0, memoryOf(mode), nullptr);
+    freeUserBufs();
     nSlots = 0;
   }
 
@@ -461,6 +495,16 @@ bool Session::start(
       return false;
     }
   }
+  else if(mode == BufferMode::UserPtr)
+  {
+    // No capability gate: the REQBUFS below is the authoritative test, and
+    // ProCapture reports no capability bits at all while supporting USERPTR.
+    if(d->fmt.sizeImage == 0)
+    {
+      d->lastError = "UserPtr needs a negotiated frame size";
+      return false;
+    }
+  }
   else if(!d->caps.mmap)
   {
     d->lastError = "driver queue does not support V4L2_MEMORY_MMAP";
@@ -472,8 +516,7 @@ bool Session::start(
   d->errFrames = d->dropFrames = 0;
   d->haveSequence = false;
 
-  const std::uint32_t mem = (mode == BufferMode::DmaBufImport) ? V4L2_MEMORY_DMABUF
-                                                               : V4L2_MEMORY_MMAP;
+  const std::uint32_t mem = Impl::memoryOf(mode);
   std::uint32_t bits = 0;
   if(!d->reqbufs(static_cast<std::uint32_t>(slotCount), mem, &bits))
   {
@@ -497,7 +540,26 @@ bool Session::start(
       f = -1;
   }
 
-  if(mode == BufferMode::DmaBufImport)
+  if(mode == BufferMode::UserPtr)
+  {
+    // 4096 both because USERPTR wants page granularity and because
+    // VK_EXT_external_memory_host's minImportedHostPointerAlignment is 4096 on
+    // every driver measured -- the same pages serve the card and the import.
+    d->userBufSize = ((d->fmt.sizeImage + 4095u) / 4096u) * 4096u;
+    for(std::size_t i = 0; i < d->nSlots; ++i)
+    {
+      void* p = nullptr;
+      if(::posix_memalign(&p, 4096, d->userBufSize) != 0 || !p)
+      {
+        d->lastError = "posix_memalign failed for a USERPTR slot";
+        d->abortStart();
+        return false;
+      }
+      ::memset(p, 0, d->userBufSize);
+      d->userBufs[i] = p;
+    }
+  }
+  else if(mode == BufferMode::DmaBufImport)
   {
     for(std::size_t i = 0; i < d->nSlots; ++i)
     {
@@ -591,6 +653,17 @@ bool Session::start(
   return true;
 }
 
+void* Session::userBuffer(std::size_t i) const noexcept
+{
+  return (d && d->mode == BufferMode::UserPtr && i < d->nSlots) ? d->userBufs[i]
+                                                                : nullptr;
+}
+
+std::size_t Session::userBufferSize() const noexcept
+{
+  return d ? d->userBufSize : 0u;
+}
+
 void Session::stop()
 {
   if(!d || d->fd < 0 || !d->streaming)
@@ -600,10 +673,11 @@ void Session::stop()
   d->streaming = false;
   d->unmapAll();
 
-  const std::uint32_t mem = (d->mode == BufferMode::DmaBufImport)
-                                ? V4L2_MEMORY_DMABUF
-                                : V4L2_MEMORY_MMAP;
-  d->reqbufs(0, mem, nullptr);
+  d->reqbufs(0, Impl::memoryOf(d->mode), nullptr);
+  // Only after REQBUFS(0): the driver holds DMA mappings of these pages until
+  // it releases the buffer set, so freeing them earlier frees memory the card
+  // may still be writing.
+  d->freeUserBufs();
   d->nSlots = 0;
 }
 
@@ -642,9 +716,7 @@ int Session::dequeue(int timeoutMs)
 
   v4l2_buffer buf{};
   v4l2_plane planes[kMaxPlanes]{};
-  const std::uint32_t mem = (d->mode == BufferMode::DmaBufImport)
-                                ? V4L2_MEMORY_DMABUF
-                                : V4L2_MEMORY_MMAP;
+  const std::uint32_t mem = Impl::memoryOf(d->mode);
   buf = {};
   buf.type = d->bufType;
   buf.memory = mem;

@@ -265,40 +265,34 @@ V4L2InputBackend::pickStrategy(
 std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
 V4L2InputBackend::pickBorrowedHostImport(QRhi::Implementation impl)
 {
-  // Second-best rung, for the many drivers that grant MMAP buffers but have no
-  // VIDIOC_EXPBUF (Magewell ProCapture among them, measured). The driver's own
-  // mmap'd pages are imported once and the GPU DMAs out of them, so the
-  // per-frame memcpy from the mapping into a staging slot disappears.
-  // mmap always returns page-aligned addresses, which is what the import wants.
+  // Zero-copy without VIDIOC_EXPBUF: V4L2_MEMORY_USERPTR lets the card DMA into
+  // pages we allocate ourselves. Unlike an MMAP mapping -- which is the
+  // device's own DMA memory and which vkGetMemoryHostPointerPropertiesEXT
+  // refuses on both NVIDIA and RADV (measured on vivid and ProCapture) --
+  // those are ordinary anonymous pages, so the same buffer serves the card and
+  // VK_EXT_external_memory_host.
   if(impl != QRhi::Vulkan)
     return {};
   if(!m_session.isOpen())
     return {};
   // The dma-buf candidate may have left the queue streaming in MmapExport;
-  // this rung needs it re-started in MmapRead, and the two cannot coexist.
+  // the modes are mutually exclusive.
   if(m_session.isStreaming())
     m_session.stop();
-  const auto caps = m_session.bufferCaps();
-  if(!caps.probed || !caps.mmap)
-    return {};
   if(m_session.format().planeCount != 1)
     return {};
 
   const std::size_t slots = std::max<std::size_t>(m_settings.slotCount, 8u);
-  if(!m_session.start(BufferMode::MmapRead, slots))
+  if(!m_session.start(BufferMode::UserPtr, slots))
   {
-    qDebug() << "V4L2: MMAP host-import rung unavailable:"
-             << m_session.lastError().c_str();
+    qDebug() << "V4L2: no USERPTR rung:" << m_session.lastError().c_str();
     return {};
   }
 
   std::vector<score::gfx::interop::BorrowedHostBuffer> bufs;
   bufs.reserve(m_session.slotCount());
   for(std::size_t i = 0; i < m_session.slotCount(); ++i)
-  {
-    const auto& s = m_session.slot(i);
-    bufs.push_back({s.mapped[0], s.mappedSize[0]});
-  }
+    bufs.push_back({m_session.userBuffer(i), m_session.userBufferSize()});
 
   auto strat = std::make_unique<score::gfx::interop::BorrowedHostImportCapture>(
       "V4L2", std::move(bufs));
