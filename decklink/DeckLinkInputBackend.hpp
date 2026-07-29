@@ -101,7 +101,9 @@ private:
   uint32_t m_frameByteSize{};
   BMDVideoInputFlags m_enableFlags{};
   /// Frame memory we own and the card DMAs into, so no copy is needed.
-  static constexpr std::size_t kPoolDepth = 8;
+  // The SDK keeps its own queue of frames in flight on top of the ones the
+  // renderer holds; 8 ran dry within 10 allocations at 1080p60.
+  static constexpr std::size_t kPoolDepth = 24;
   DeckLinkBufferPool m_pool;
   DeckLinkAllocatorProvider* m_provider{};
   /// Set only while the renderer is on the rung that samples the pool.

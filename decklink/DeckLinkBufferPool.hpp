@@ -266,9 +266,15 @@ public:
     {
       // Every buffer is spoken for. Failing is correct -- handing back one the
       // renderer is sampling would tear the displayed frame -- but a pool that
-      // runs dry every frame means it is too shallow for FramesInFlight.
-      qWarning() << "DeckLink pool: exhausted after" << m_allocCalls
-                 << "allocations; capture will stall";
+      // runs dry means it is too shallow for the SDK's queue plus
+      // FramesInFlight. Warn once: the SDK retries per frame, so logging each
+      // time buries every other message.
+      if(!m_warnedExhausted)
+      {
+        m_warnedExhausted = true;
+        qWarning() << "DeckLink pool: exhausted after" << m_allocCalls
+                   << "allocations; deepen kPoolDepth";
+      }
       *allocated = nullptr;
       return E_OUTOFMEMORY;
     }
@@ -283,6 +289,7 @@ private:
   DeckLinkBufferPool& m_pool;
   std::atomic<int> m_ref{1};
   int m_allocCalls{};
+  bool m_warnedExhausted{};
 };
 
 class DeckLinkAllocatorProvider final : public IDeckLinkVideoBufferAllocatorProvider
