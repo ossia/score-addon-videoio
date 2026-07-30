@@ -497,6 +497,7 @@ struct Options
   std::vector<std::string> interops; // empty => {cpu,dvp,rdma}
   std::string dumpPrefix;            // if set, dump first verified frame/cell
   std::string rxMode = "cpu";        // cpu (AVFrame capture) | gpu (readback)
+  std::string txMode = "on";         // on | none (RX-only: external sender)
   std::string texgen = "gpu";        // gpu (shader pattern) | cpu (legacy paint)
   std::string eightKMode = "tsi";    // 8K routing: tsi | squares (SQD)
   score::gfx::GraphicsApi api = score::gfx::GraphicsApi::OpenGL; // render backend
@@ -832,6 +833,8 @@ struct GpuReceiver
   std::string engagedRx = "-";
   bool pinUnmet = false;
 
+  std::uint64_t captured = 0;
+
   void stop()
   {
     if(in)
@@ -839,6 +842,7 @@ struct GpuReceiver
       if(const char* n = in->engagedCaptureStrategy())
         engagedRx = n;
       pinUnmet = in->captureStrategyPinUnmet();
+      captured = in->capturedFrameCount();
     }
     graph.reset();
     delete bg;
@@ -889,6 +893,7 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
   // card's own acFramesProcessed via SCORE_AJA_ACSTATS) from the harness's
   // single-thread render+readback+verify coupling.
   const bool txOnly = (opt.rxMode == "none");
+  const bool rxOnly = (opt.txMode == "none");
   const bool gpuRx = (opt.rxMode == "gpu");
   inS.useRDMA = gpuRx; // GPU-direct capture node vs CPU-staging capture
 
@@ -922,38 +927,43 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
   // A/B comparison; both produce bit-identical pixels.
   score::gfx::NodeModel* src{};
   score::gfx::Port* srcOut{};
-  if(opt.texgen == "cpu")
+  AJANode* out{};
+  std::unique_ptr<score::gfx::Graph> graph;
+  if(!rxOnly)
   {
-    auto* n = new score::gfx::TexgenNode;
-    n->function = &g_paint;
-    src = n;
-    srcOut = n->output[0];
-  }
-  else
-  {
-    auto* n = new score::gfx::ShaderTexgenNode;
-    n->onFrame
-        = [](int idx) { g_sendNs[idx].store(nowNs(), std::memory_order_relaxed); };
-    src = n;
-    srcOut = n->output[0];
-  }
-  auto* out = new AJANode(outS);
+    if(opt.texgen == "cpu")
+    {
+      auto* n = new score::gfx::TexgenNode;
+      n->function = &g_paint;
+      src = n;
+      srcOut = n->output[0];
+    }
+    else
+    {
+      auto* n = new score::gfx::ShaderTexgenNode;
+      n->onFrame
+          = [](int idx) { g_sendNs[idx].store(nowNs(), std::memory_order_relaxed); };
+      src = n;
+      srcOut = n->output[0];
+    }
+    out = new AJANode(outS);
 
-  auto graph = std::make_unique<score::gfx::Graph>();
-  graph->addNode(src);
-  graph->addNode(out);
-  graph->addEdge(srcOut, out->input[0], Process::CableType::ImmediateGlutton);
-  graph->createAllRenderLists(opt.api);
+    graph = std::make_unique<score::gfx::Graph>();
+    graph->addNode(src);
+    graph->addNode(out);
+    graph->addEdge(srcOut, out->input[0], Process::CableType::ImmediateGlutton);
+    graph->createAllRenderLists(opt.api);
 
-  if(!out->canRender())
-  {
-    r.status = "SKIP(out-init)";
-    graph.reset();
-    delete out;
-    delete src;
-    return r;
+    if(!out->canRender())
+    {
+      r.status = "SKIP(out-init)";
+      graph.reset();
+      delete out;
+      delete src;
+      return r;
+    }
+    r.strategy = out->activeStrategyName();
   }
-  r.strategy = out->activeStrategyName();
 
   // Open the receiver only after the sender is emitting, so the SDI signal is
   // present when capture probes the link.
@@ -1003,9 +1013,12 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
   // gpu-rx mode) do the capture readback+verify. Shared by both clock paths so
   // they are byte-identical per tick; only the *pacing source* differs.
   auto renderTick = [&] {
-    const int64_t t0 = nowNs();
-    out->render();
-    renderMs.add((nowNs() - t0) / 1e6);
+    if(out)
+    {
+      const int64_t t0 = nowNs();
+      out->render();
+      renderMs.add((nowNs() - t0) / 1e6);
+    }
     if(gpuRx)
       gpuRcv.renderTick(); // capture readback + verify (main thread)
   };
@@ -1014,7 +1027,7 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
   // VBI — the same genlock the submit pump waits on — so render and submit are
   // phase-locked (goal: kill the out-ring drops + tighten jitter). Default
   // --clock timer keeps the free-running wall-timer below, byte-for-byte.
-  const bool wantGenlock = (opt.clock == "genlock");
+  const bool wantGenlock = (opt.clock == "genlock" && out);
   std::function<bool()> genlockTick
       = wantGenlock ? out->genlockTickSource() : std::function<bool()>{};
   if(wantGenlock && !genlockTick)
@@ -1100,12 +1113,15 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
   r.renderMaxMs = rnd.max;
   r.meanPsnr = M.psnrCount.load() > 0 ? M.psnrSum.load() / M.psnrCount.load() : 0;
   r.minPsnr = M.psnrCount.load() > 0 ? M.psnrMin.load() : 0;
-  r.txGood = out->pacingGoodXfers();
-  r.txDrops = out->pacingDrops();
-  r.txUnderruns = out->pacingUnderruns();
-  r.sent = int(r.txGood);
-  r.txPinUnmet = out->outputStrategyPinUnmet();
-  r.txPinUnavailable = out->outputStrategyPinUnavailable();
+  if(out)
+  {
+    r.txGood = out->pacingGoodXfers();
+    r.txDrops = out->pacingDrops();
+    r.txUnderruns = out->pacingUnderruns();
+    r.sent = int(r.txGood);
+    r.txPinUnmet = out->outputStrategyPinUnmet();
+    r.txPinUnavailable = out->outputStrategyPinUnavailable();
+  }
 
   if(r.status.empty() && txOnly)
   {
@@ -1148,6 +1164,14 @@ Result runCell(const Options& opt, const VFmt& vf, const PFmt& pf,
   {
     r.rxStrategy = gpuRcv.engagedRx;
     r.rxPinUnmet = gpuRcv.pinUnmet;
+    // Device cadence vs harness cadence: the verification readback is not part
+    // of score's capture path, so a shortfall here is the harness's, not the
+    // card's, and must not be read as a capture failure.
+    std::printf(
+        "    capture: %llu frames on the card ring (%.1f fps) vs %d verified "
+        "(%.1f fps)\n",
+        (unsigned long long)gpuRcv.captured, gpuRcv.captured / opt.seconds,
+        r.recv, r.fps);
   }
   else if(!txOnly)
   {
@@ -1728,6 +1752,11 @@ Options parseOptions()
       "Receiver: cpu (AVFrame capture) | gpu (AJAInputNode readback) | none "
       "(TX-only, measures pure sender cadence)",
       "mode", "cpu");
+  QCommandLineOption tx(
+      "tx",
+      "Sender: on | none (RX-only: verify against a signal emitted by a "
+      "separate process, so the receiver is not serialised behind the sender)",
+      "mode", "on");
   QCommandLineOption texgenOpt(
       "texgen", "Test source: gpu (shader pattern) | cpu (legacy CPU paint)",
       "mode", "gpu");
@@ -1762,8 +1791,8 @@ Options parseOptions()
       "Env SCORE_AJA_GENLOCK_CLOCK=1 also selects genlock.",
       "mode", "timer");
   p.addOptions(
-      {outDev, inDev, outCh, inCh, secs, fmts, pfs, iop, dump, rx, texgenOpt,
-       apiOpt, eightKModeOpt, allFmt, hdrOpt, list, benchUp, vkProbe,
+      {outDev, inDev, outCh, inCh, secs, fmts, pfs, iop, dump, rx, tx,
+       texgenOpt, apiOpt, eightKModeOpt, allFmt, hdrOpt, list, benchUp, vkProbe,
        outDepthOpt, clockOpt});
   p.process(*qApp);
 
@@ -1790,6 +1819,7 @@ Options parseOptions()
   if(p.isSet(dump))
     o.dumpPrefix = p.value(dump).toStdString();
   o.rxMode = p.value(rx).toStdString();
+  o.txMode = p.value(tx).toStdString();
   o.texgen = p.value(texgenOpt).toStdString();
   o.eightKMode = p.value(eightKModeOpt).toStdString();
   o.api = parseApi(p.value(apiOpt).toStdString());
