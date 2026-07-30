@@ -6,6 +6,7 @@
 #include <Gfx/Graph/interop/BorrowedHostImportCapture.hpp>
 #include <Gfx/Graph/interop/DmaBufImportCapture.hpp>
 #include <Gfx/Graph/interop/VideoCaptureStrategy.hpp>
+#include <Gfx/Graph/interop/V4L2PixelFormat.hpp>
 #include <Gfx/Graph/interop/VideoPixelFormatAV.hpp>
 
 #include <linux/videodev2.h>
@@ -20,128 +21,12 @@ namespace Gfx::V4L2
 {
 using score::gfx::interop::VideoPixelFormat;
 
+// The fourcc table lives in score-plugin-gfx so the camera enumeration and this
+// capture path cannot drift apart; compressed fourccs deliberately resolve to
+// Unknown here because this path has no decode stage.
 VideoPixelFormat neutralFromV4L2Fourcc(std::uint32_t f) noexcept
 {
-  switch(f)
-  {
-    case V4L2_PIX_FMT_UYVY:
-      return VideoPixelFormat::UYVY422;
-    case V4L2_PIX_FMT_YUYV:
-      return VideoPixelFormat::YUYV422;
-    case V4L2_PIX_FMT_YVYU:
-      return VideoPixelFormat::YVYU422;
-    case V4L2_PIX_FMT_VYUY:
-      return VideoPixelFormat::VYUY422;
-    // Planar formats: CpuStagedCapture uploads each plane from its own
-    // offset inside the contiguous capture buffer, derived from the decoder's
-    // own texture geometry.
-    case V4L2_PIX_FMT_NV12:
-      return VideoPixelFormat::NV12;
-    case V4L2_PIX_FMT_NV21:
-      return VideoPixelFormat::NV21;
-    case V4L2_PIX_FMT_NV16:
-      return VideoPixelFormat::NV16;
-    case V4L2_PIX_FMT_NV61:
-      return VideoPixelFormat::NV61;
-    case V4L2_PIX_FMT_NV24:
-      return VideoPixelFormat::NV24;
-    case V4L2_PIX_FMT_NV42:
-      return VideoPixelFormat::NV42;
-    case V4L2_PIX_FMT_YUV420:
-      return VideoPixelFormat::YUV420P;
-    case V4L2_PIX_FMT_YVU420:
-      return VideoPixelFormat::YVU420P;
-    case V4L2_PIX_FMT_YUV422P:
-      return VideoPixelFormat::YUV422P;
-    case V4L2_PIX_FMT_VUYA32:
-      return VideoPixelFormat::VUYA;
-    case V4L2_PIX_FMT_VUYX32:
-      return VideoPixelFormat::VUYX;
-    case V4L2_PIX_FMT_AYUV32:
-      return VideoPixelFormat::AYUV;
-    case V4L2_PIX_FMT_XYUV32:
-      return VideoPixelFormat::XYUV;
-    case V4L2_PIX_FMT_YUVA32:
-      return VideoPixelFormat::YUVA;
-    case V4L2_PIX_FMT_YUVX32:
-      return VideoPixelFormat::YUVX;
-    case V4L2_PIX_FMT_YUV444:
-      return VideoPixelFormat::AYUV4444;
-    case V4L2_PIX_FMT_YUV555:
-      return VideoPixelFormat::AYUV1555;
-    case V4L2_PIX_FMT_YUV565:
-      return VideoPixelFormat::YUV565;
-    // The eight 32-bit orderings differ only in where the alpha/padding byte
-    // sits; the neutral names below describe MEMORY order, matching V4L2's.
-    case V4L2_PIX_FMT_ARGB32:
-      return VideoPixelFormat::ARGB8;
-    case V4L2_PIX_FMT_XRGB32:
-      return VideoPixelFormat::XRGB8;
-    case V4L2_PIX_FMT_XBGR32:
-      return VideoPixelFormat::BGRX8;
-    case V4L2_PIX_FMT_RGBX32:
-      return VideoPixelFormat::RGBX8;
-    case V4L2_PIX_FMT_BGRA32:
-      return VideoPixelFormat::ABGR8;
-    case V4L2_PIX_FMT_BGRX32:
-      return VideoPixelFormat::XBGR8;
-    case V4L2_PIX_FMT_ABGR32: // V4L2 "AR24": B,G,R,A in memory
-      return VideoPixelFormat::BGRA8;
-    case V4L2_PIX_FMT_RGBA32: // V4L2 "AB24": R,G,B,A in memory
-      return VideoPixelFormat::RGBA8;
-    // The two legacy 32-bit fourccs. V4L2 deprecated them precisely because
-    // their byte order was never pinned down, so these are what the hardware we
-    // have actually delivers, measured against a simultaneous RGB24 capture of
-    // the same source: 'BGR4' -> B,G,R,X and 'RGB4' -> R,G,B,X, i.e. both in
-    // name order with the pad last. A driver that disagrees is within its
-    // rights; it should be emitting the explicit fourccs above instead.
-    // Magewell ProCapture advertises ONLY these two for 32-bit, so without them
-    // its RGB modes are refused outright.
-    case V4L2_PIX_FMT_BGR32:
-      return VideoPixelFormat::BGRX8;
-    case V4L2_PIX_FMT_RGB32:
-      return VideoPixelFormat::RGBX8;
-    // Single-channel sensors: greyscale industrial cameras and depth streams.
-    // Z16 is 16-bit depth; decoded as mono luminance it is the wire format
-    // rendered faithfully, which is what this layer is responsible for --
-    // interpreting the values as distance is a separate concern.
-    case V4L2_PIX_FMT_GREY:
-      return VideoPixelFormat::Mono8;
-    case V4L2_PIX_FMT_Y10:
-      return VideoPixelFormat::Mono10;
-    case V4L2_PIX_FMT_Y12:
-      return VideoPixelFormat::Mono12;
-    case V4L2_PIX_FMT_Y16:
-    case V4L2_PIX_FMT_Z16:
-      return VideoPixelFormat::Mono16;
-    case V4L2_PIX_FMT_Y16_BE:
-      return VideoPixelFormat::Mono16BE;
-    case V4L2_PIX_FMT_BGR24:
-      return VideoPixelFormat::BGR24;
-    case V4L2_PIX_FMT_RGB24:
-      return VideoPixelFormat::RGB24;
-    case V4L2_PIX_FMT_RGB332:
-      return VideoPixelFormat::RGB332;
-    case V4L2_PIX_FMT_RGB565:
-      return VideoPixelFormat::RGB565;
-    case V4L2_PIX_FMT_RGB565X:
-      return VideoPixelFormat::RGB565BE;
-    case V4L2_PIX_FMT_RGB555:
-      return VideoPixelFormat::RGB555;
-    case V4L2_PIX_FMT_RGB555X:
-      return VideoPixelFormat::RGB555BE;
-    case V4L2_PIX_FMT_ARGB555:
-      return VideoPixelFormat::ARGB1555;
-    case V4L2_PIX_FMT_RGB444:
-      return VideoPixelFormat::RGB444;
-    case V4L2_PIX_FMT_ARGB444:
-      return VideoPixelFormat::ARGB4444;
-    default:
-      // Compressed sources (MJPG/H264) land here on purpose: they need a
-      // decode stage this path does not have, and silently treating them as
-      // raw would render noise.
-      return VideoPixelFormat::Unknown;
-  }
+  return score::gfx::interop::fromV4L2PixelFormat(f);
 }
 
 V4L2InputBackend::V4L2InputBackend(
