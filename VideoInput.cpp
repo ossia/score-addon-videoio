@@ -57,6 +57,11 @@
 #include <v4l2/V4L2Session.hpp>
 #endif
 
+#if defined(SCORE_HAS_ARGUS)
+#include <argus/ArgusCaptureNode.hpp>
+#include <argus/ArgusRuntime.hpp>
+#endif
+
 #if defined(SCORE_HAS_MAGEWELL)
 #include <magewell/MagewellCaptureNode.hpp>
 #include <magewell/MagewellDevices.hpp>
@@ -385,6 +390,33 @@ bool VideoInputDevice::reconnect()
         return false;
 #endif
         break;
+      }
+      case Vendor::Argus:
+      {
+#if defined(SCORE_HAS_ARGUS)
+        Gfx::Argus::ArgusSettings a;
+        a.sensorId = std::uint32_t(std::max(0, set.deviceIndex));
+        // sensorMode -1 = "best match", the same default the GStreamer element
+        // uses; ResolutionMode carries it so no new settings field is needed.
+        a.sensorMode = set.resolutionMode > 0 ? (set.resolutionMode - 1) : -1;
+        if(const auto geom = set.videoFormat.split('x'); geom.size() == 2)
+        {
+          bool okW = false, okH = false;
+          const auto w = geom[0].trimmed().toUInt(&okW);
+          const auto h = geom[1].trimmed().toUInt(&okH);
+          if(okW && okH)
+          {
+            a.width = w;
+            a.height = h;
+          }
+        }
+        registerGpuDirect(new Gfx::Argus::ArgusCaptureNode{a});
+        qDebug() << "Direct Video Input: Argus camera node";
+        return connected();
+#else
+        qDebug() << "Direct Video Input: Argus not compiled in";
+        return false;
+#endif
       }
       case Vendor::Magewell:
       {

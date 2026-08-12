@@ -133,9 +133,16 @@ find_library(ARGUS_LIBRARY
 if(ARGUS_LIBRARY AND EXISTS "${JETSON_MMAPI_ROOT}/argus/include/Argus/Argus.h")
   list(APPEND VIDEOIO_HDRS
     "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusSettings.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusRuntime.hpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusRuntime.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusRuntimeInternal.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusSession.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusInputBackend.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusCaptureNode.hpp")
   list(APPEND VIDEOIO_SRCS
-    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusRuntime.cpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusRuntime.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusSession.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusInputBackend.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusCaptureNode.cpp")
   list(APPEND VIDEOIO_DEFS SCORE_HAS_ARGUS=1)
   list(APPEND VIDEOIO_INCS
     "${JETSON_MMAPI_ROOT}/argus/include"
@@ -145,11 +152,16 @@ if(ARGUS_LIBRARY AND EXISTS "${JETSON_MMAPI_ROOT}/argus/include/Argus/Argus.h")
 else()
   # Still compile the runtime shim so argusCompiledIn() exists everywhere and
   # the difference between "no Tegra" and "daemon down" stays reportable.
+  # Without the Argus headers only the runtime + session stubs build: the
+  # backend and node pull in the capture ladder and would be dead weight, and
+  # argusCompiledIn() is what callers use to tell "no Tegra" from "daemon down".
   list(APPEND VIDEOIO_HDRS
     "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusSettings.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusRuntime.hpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusRuntime.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusSession.hpp")
   list(APPEND VIDEOIO_SRCS
-    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusRuntime.cpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusRuntime.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusSession.cpp")
   message(STATUS "score-addon-videoio: NVIDIA Argus not found; stub only")
 endif()
 

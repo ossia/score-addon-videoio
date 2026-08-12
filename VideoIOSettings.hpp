@@ -20,7 +20,10 @@ enum class Vendor : int
   Deltacast = 2,
   Bluefish = 3,
   Magewell = 4,
-  V4L2 = 5
+  V4L2 = 5,
+  /// NVIDIA Argus (Tegra camera ISP). Appended, never renumbered: these
+  /// values are serialised into saved documents.
+  Argus = 6
 };
 
 /// Vendor-neutral playout settings. Vendor-specific knobs are carried as plain

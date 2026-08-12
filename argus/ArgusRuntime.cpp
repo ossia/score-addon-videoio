@@ -7,6 +7,8 @@
 
 #if defined(SCORE_HAS_ARGUS)
 #include <Argus/Argus.h>
+
+#include <argus/ArgusRuntimeInternal.hpp>
 #endif
 
 namespace Gfx::Argus
@@ -46,15 +48,17 @@ struct Provider
 
 Provider& provider()
 {
-  static Provider p = [] {
-    Provider r;
-    r.obj = ::Argus::UniqueObj<::Argus::CameraProvider>(
+  // Built in place: UniqueObj is not copyable, so the provider cannot be
+  // returned by value out of an initialiser lambda.
+  static Provider p;
+  [[maybe_unused]] static const bool once = [] {
+    p.obj = ::Argus::UniqueObj<::Argus::CameraProvider>(
         ::Argus::CameraProvider::create());
-    r.iface = ::Argus::interface_cast<::Argus::ICameraProvider>(r.obj);
-    if(!r.iface)
+    p.iface = ::Argus::interface_cast<::Argus::ICameraProvider>(p.obj);
+    if(!p.iface)
       qDebug() << "Argus: CameraProvider unavailable (is nvargus-daemon "
                   "running?)";
-    return r;
+    return true;
   }();
   return p;
 }
@@ -73,12 +77,14 @@ const char* modeTypeName(::Argus::SensorModeType t)
 }
 
 std::vector<CameraInfo> g_cameras;
+std::vector<::Argus::CameraDevice*> g_devices;
 bool g_scanned{false};
 std::mutex g_mutex;
 
 void scanLocked()
 {
   g_cameras.clear();
+  g_devices.clear();
   g_scanned = true;
 
   auto* prov = provider().iface;
@@ -129,6 +135,7 @@ void scanLocked()
       cam.modes.push_back(std::move(info));
     }
     g_cameras.push_back(std::move(cam));
+    g_devices.push_back(devices[i]);
   }
 }
 }
@@ -150,6 +157,19 @@ void argusRefreshCameras()
 {
   std::lock_guard lock{g_mutex};
   scanLocked();
+}
+
+::Argus::ICameraProvider* argusProviderHandle() noexcept
+{
+  return provider().iface;
+}
+
+const std::vector<::Argus::CameraDevice*>& argusDeviceHandles()
+{
+  std::lock_guard lock{g_mutex};
+  if(!g_scanned)
+    scanLocked();
+  return g_devices;
 }
 
 #endif

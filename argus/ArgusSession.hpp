@@ -1,0 +1,113 @@
+#pragma once
+
+/**
+ * @file ArgusSession.hpp
+ * @brief One camera: capture session, buffer pool, and the acquire/release loop.
+ *
+ * The pool is ours, not libargus's. Argus can be handed application buffers
+ * only as EGLImages -- BUFFER_TYPE_EGL_IMAGE is the only BufferType it defines
+ * -- so each slot is an NvBufSurface, mapped to an EGLImage, registered with a
+ * BufferOutputStream. The ISP then writes straight into memory we already own
+ * and can hand to the GPU as a dma-buf fd.
+ *
+ * That is the whole point of using STREAM_TYPE_BUFFER rather than the
+ * STREAM_TYPE_EGL path nvarguscamerasrc uses. The GStreamer element consumes an
+ * EGLStream through a FrameConsumer and then calls copyToNvBuffer once per
+ * frame (gstnvarguscamerasrc.cpp:689) -- a full-frame copy it cannot avoid,
+ * before nvvidconv copies again. Here there is no such copy.
+ *
+ * BORROWED-BUFFER LIFETIME
+ * ------------------------
+ * A slot acquired from Argus must not be released back until the GPU has
+ * finished sampling it, which is exactly the contract the capture ladder's
+ * borrowed rungs already arbitrate. So the loop is:
+ *
+ *   acquireBuffer()            -- Argus hands back a filled Buffer
+ *   getClientData()            -- recover which slot it is
+ *   onFrame(slot)              -- publish to the renderer
+ *   drain returned slots       -- releaseBuffer() only those the renderer freed
+ *
+ * Releasing a slot the renderer still holds corrupts the frame on screen;
+ * never releasing starves the ISP. Both failure modes are silent, which is why
+ * the release is driven by the ladder's returned-slot bitmask and not by a
+ * timer or a fixed depth.
+ */
+
+#include <argus/ArgusRuntime.hpp>
+#include <argus/ArgusSettings.hpp>
+
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <vector>
+
+namespace Gfx::Argus
+{
+
+/// One pool slot as the GPU side needs to see it.
+struct ArgusSlot
+{
+  int dmabufFd{-1};
+  std::uint32_t offset[3]{};
+  std::uint32_t pitch[3]{};
+  std::uint32_t planeCount{1};
+  std::uint32_t totalBytes{};
+  /// Host mapping, only when the CPU rung is in use (NvBufSurfaceMap).
+  void* host{};
+};
+
+class ArgusSession
+{
+public:
+  ArgusSession();
+  ~ArgusSession();
+  ArgusSession(const ArgusSession&) = delete;
+  ArgusSession& operator=(const ArgusSession&) = delete;
+
+  /// Opens the camera, resolves the sensor mode, allocates and registers the
+  /// buffer pool, and builds the repeating request. False on any failure, with
+  /// the reason logged -- the caller then declines the backend rather than
+  /// running a half-configured session.
+  bool open(const ArgusSettings& settings);
+  void close();
+
+  bool isOpen() const noexcept;
+
+  std::uint32_t width() const noexcept;
+  std::uint32_t height() const noexcept;
+  /// Total bytes of one frame across all planes, which is what the capture
+  /// strategies size their imports from.
+  std::uint32_t frameByteSize() const noexcept;
+  /// The mode actually selected, after resolveSensorMode and any clamping.
+  std::int32_t resolvedSensorMode() const noexcept;
+  double resolvedFrameRate() const noexcept;
+
+  const std::vector<ArgusSlot>& slots() const noexcept;
+
+  /// Map every slot into host memory. Only needed by the CPU rung; the
+  /// zero-copy rungs never touch the mapping, and mapping unnecessarily costs
+  /// a coherency flush per frame on Tegra.
+  bool mapHost();
+
+  /// Starts the repeating capture and the acquire loop.
+  ///
+  /// @p onFrame is called on the capture thread with the slot index that just
+  ///    filled; it must publish and return promptly.
+  /// @p takeReturned is polled each iteration for the bitmask of slots the
+  ///    renderer has finished with; those are released back to Argus.
+  bool start(
+      std::function<void(std::size_t)> onFrame,
+      std::function<std::uint32_t()> takeReturned);
+  void stop();
+
+  /// Frames Argus has handed us. The device's own cadence, independent of how
+  /// fast the renderer consumes -- a harness reporting only its consumption
+  /// rate cannot tell a stalled sensor from a slow renderer.
+  std::uint64_t capturedFrames() const noexcept;
+
+private:
+  struct Impl;
+  std::unique_ptr<Impl> d;
+};
+
+}
