@@ -63,6 +63,15 @@ const std::vector<ArgusSlot>& ArgusSession::slots() const noexcept
   static const std::vector<ArgusSlot> empty;
   return empty;
 }
+const std::vector<ArgusSlot>& ArgusSession::slots(std::size_t) const noexcept
+{
+  static const std::vector<ArgusSlot> empty;
+  return empty;
+}
+std::size_t ArgusSession::streamCount() const noexcept
+{
+  return 0;
+}
 bool ArgusSession::mapHost()
 {
   return false;
@@ -218,8 +227,6 @@ struct ArgusSession::Impl
 
   UniqueObj<CaptureSession> session;
   ICaptureSession* iSession{};
-  UniqueObj<OutputStream> stream;
-  IBufferOutputStream* iStream{};
   UniqueObj<Request> request;
 
   struct Slot
@@ -231,8 +238,21 @@ struct ArgusSession::Impl
     std::size_t index{};
     bool mapped{false};
   };
-  std::vector<Slot> pool;
-  std::vector<ArgusSlot> pub;
+
+  /// One sensor's output stream and its buffer pool. A synchronised multi-sensor
+  /// session has several of these under one CaptureSession and one Request, which
+  /// is what makes their frames belong to the same capture; a single-sensor
+  /// session is the same code with one entry.
+  struct Stream
+  {
+    UniqueObj<OutputStream> stream;
+    IBufferOutputStream* iStream{};
+    std::vector<Slot> pool;
+    std::vector<ArgusSlot> pub;
+  };
+  // Held by pointer: Argus's UniqueObj is neither copyable nor movable, so a
+  // vector of Streams cannot reallocate.
+  std::vector<std::unique_ptr<Stream>> streams;
 
   std::uint32_t w{}, h{}, frameBytes{};
   std::int32_t mode{-1};
@@ -252,20 +272,25 @@ struct ArgusSession::Impl
 
   void destroyPool()
   {
-    for(auto& s : pool)
+    for(auto& stp : streams)
     {
-      if(s.mapped && s.surf)
-        NvBufSurfaceUnMap(s.surf, 0, 0);
-      if(s.eglImage && s.surf)
-        NvBufSurfaceUnMapEglImage(s.surf, 0);
-      // The Argus Buffer is owned by the stream and dies with it; the surface
-      // is ours.
-      if(s.surf)
-        NvBufSurfaceDestroy(s.surf);
-      s = {};
+      auto& st = *stp;
+      for(auto& s : st.pool)
+      {
+        if(s.mapped && s.surf)
+          NvBufSurfaceUnMap(s.surf, 0, 0);
+        if(s.eglImage && s.surf)
+          NvBufSurfaceUnMapEglImage(s.surf, 0);
+        // The Argus Buffer is owned by the stream and dies with it; the surface
+        // is ours.
+        if(s.surf)
+          NvBufSurfaceDestroy(s.surf);
+        s = {};
+      }
+      st.pool.clear();
+      st.pub.clear();
     }
-    pool.clear();
-    pub.clear();
+    streams.clear();
   }
 };
 
@@ -281,7 +306,7 @@ ArgusSession::~ArgusSession()
 
 bool ArgusSession::isOpen() const noexcept
 {
-  return d && d->iStream != nullptr;
+  return d && !d->streams.empty() && d->streams[0]->iStream != nullptr;
 }
 std::uint32_t ArgusSession::width() const noexcept
 {
@@ -305,7 +330,18 @@ double ArgusSession::resolvedFrameRate() const noexcept
 }
 const std::vector<ArgusSlot>& ArgusSession::slots() const noexcept
 {
-  return d->pub;
+  return slots(0);
+}
+
+const std::vector<ArgusSlot>& ArgusSession::slots(std::size_t stream) const noexcept
+{
+  static const std::vector<ArgusSlot> empty;
+  return stream < d->streams.size() ? d->streams[stream]->pub : empty;
+}
+
+std::size_t ArgusSession::streamCount() const noexcept
+{
+  return d ? d->streams.size() : 0;
 }
 std::uint64_t ArgusSession::capturedFrames() const noexcept
 {
@@ -389,36 +425,81 @@ bool ArgusSession::open(const ArgusSettings& settings)
     return false;
   }
 
-  d->session = UniqueObj<CaptureSession>(
-      prov->createCaptureSession(devices[settings.sensorId]));
+  // The sensors of one rig share a single CaptureSession. That is what makes
+  // their frames one capture: one AE/AWB loop, one Request, one repeat clock.
+  // Two sessions would give two of each, and no amount of correlation downstream
+  // can put back a synchronisation the capture never had.
+  std::vector<std::uint32_t> ids = settings.sensorIds;
+  if(ids.empty())
+    ids.push_back(settings.sensorId);
+  for(auto id : ids)
+  {
+    if(id >= devices.size())
+    {
+      qWarning() << "Argus: no device handle for sensor-id" << id;
+      return false;
+    }
+  }
+
+  if(ids.size() > 1)
+  {
+    // Must be declared before the session is created, and counts SESSIONS of
+    // each kind rather than sensors.
+    if(prov->setSyncSensorSessionsCount(1, 0) != STATUS_OK)
+      qWarning() << "Argus: setSyncSensorSessionsCount refused; the sensors may "
+                    "not be hardware-synchronised";
+    std::vector<CameraDevice*> devs;
+    devs.reserve(ids.size());
+    for(auto id : ids)
+      devs.push_back(devices[id]);
+    d->session = UniqueObj<CaptureSession>(prov->createCaptureSession(devs));
+  }
+  else
+  {
+    d->session = UniqueObj<CaptureSession>(
+        prov->createCaptureSession(devices[ids[0]]));
+  }
   d->iSession = interface_cast<ICaptureSession>(d->session);
   if(!d->iSession)
   {
-    qWarning() << "Argus: createCaptureSession failed";
+    qWarning() << "Argus: createCaptureSession failed for" << ids.size()
+               << "sensor(s)";
     return false;
   }
 
-  UniqueObj<OutputStreamSettings> streamSettings(
-      d->iSession->createOutputStreamSettings(STREAM_TYPE_BUFFER));
-  auto* iStreamSettings
-      = interface_cast<IBufferOutputStreamSettings>(streamSettings);
-  if(!iStreamSettings)
+  d->streams.reserve(ids.size());
+  for(std::size_t i = 0; i < ids.size(); ++i)
+    d->streams.push_back(std::make_unique<Impl::Stream>());
+  for(std::size_t si = 0; si < ids.size(); ++si)
   {
-    qWarning() << "Argus: no IBufferOutputStreamSettings";
-    return false;
-  }
-  // BUFFER_TYPE_EGL_IMAGE is the only buffer type libargus defines, so this is
-  // not a choice: it is the sole way to give it memory we own.
-  iStreamSettings->setBufferType(BUFFER_TYPE_EGL_IMAGE);
-  iStreamSettings->setMetadataEnable(true);
+    UniqueObj<OutputStreamSettings> streamSettings(
+        d->iSession->createOutputStreamSettings(STREAM_TYPE_BUFFER));
+    auto* iStreamSettings
+        = interface_cast<IBufferOutputStreamSettings>(streamSettings);
+    if(!iStreamSettings)
+    {
+      qWarning() << "Argus: no IBufferOutputStreamSettings";
+      return false;
+    }
+    // BUFFER_TYPE_EGL_IMAGE is the only buffer type libargus defines, so this is
+    // not a choice: it is the sole way to give it memory we own.
+    iStreamSettings->setBufferType(BUFFER_TYPE_EGL_IMAGE);
+    iStreamSettings->setMetadataEnable(true);
+    // Which sensor feeds this stream. Without it every stream defaults to the
+    // first device in the session, so a two-sensor rig would silently deliver
+    // the same eye twice.
+    if(auto* iOut = interface_cast<IOutputStreamSettings>(streamSettings))
+      iOut->setCameraDevice(devices[ids[si]]);
 
-  d->stream = UniqueObj<OutputStream>(
-      d->iSession->createOutputStream(streamSettings.get()));
-  d->iStream = interface_cast<IBufferOutputStream>(d->stream);
-  if(!d->iStream)
-  {
-    qWarning() << "Argus: createOutputStream failed";
-    return false;
+    d->streams[si]->stream = UniqueObj<OutputStream>(
+        d->iSession->createOutputStream(streamSettings.get()));
+    d->streams[si]->iStream
+        = interface_cast<IBufferOutputStream>(d->streams[si]->stream);
+    if(!d->streams[si]->iStream)
+    {
+      qWarning() << "Argus: createOutputStream failed for sensor" << ids[si];
+      return false;
+    }
   }
 
   // --- buffer pool ----------------------------------------------------------
@@ -433,101 +514,110 @@ bool ArgusSession::open(const ArgusSettings& settings)
   if(const auto env = qgetenv("SCORE_ARGUS_BUFFERS").toULongLong(); env >= 4)
     want = env;
   const auto n = std::max<std::size_t>(want, 4);
-  d->pool.resize(n);
-  d->pub.resize(n);
-
-  for(std::size_t i = 0; i < n; ++i)
+  // Each sensor gets its own pool: the ISP writes one frame per sensor per
+  // capture, and they must land in separate memory to be sampled together.
+  for(auto& stp : d->streams)
   {
-    NvBufSurfaceAllocateParams p{};
-    p.params.width = d->w;
-    p.params.height = d->h;
-    p.params.colorFormat = NVBUF_COLOR_FORMAT_NV12;
-    // Pitch-linear, not block-linear: a block-linear surface is only importable
-    // with the matching DRM modifier, and the zero-copy rungs take the plain
-    // linear path. Cheaper to let the ISP write linear than to teach every
-    // importer a vendor modifier.
-    p.params.layout = NVBUF_LAYOUT_PITCH;
-    p.params.memType = NVBUF_MEM_SURFACE_ARRAY;
-    p.memtag = NvBufSurfaceTag_CAMERA;
-    // Tight rows: the planar importers derive plane offsets assuming no row
-    // padding and refuse a padded pitch, so ask for none rather than be
-    // declined.
-    p.disablePitchPadding = true;
+    auto& st = *stp;
+    st.pool.resize(n);
+    st.pub.resize(n);
 
-    NvBufSurface* surf{};
-    if(NvBufSurfaceAllocate(&surf, 1, &p) != 0 || !surf)
+    for(std::size_t i = 0; i < n; ++i)
     {
-      qWarning() << "Argus: NvBufSurfaceAllocate failed for slot" << i;
-      d->destroyPool();
-      return false;
-    }
-    surf->numFilled = 1;
-    d->pool[i].surf = surf;
-    d->pool[i].index = i;
+      NvBufSurfaceAllocateParams p{};
+      p.params.width = d->w;
+      p.params.height = d->h;
+      p.params.colorFormat = NVBUF_COLOR_FORMAT_NV12;
+      // Pitch-linear, not block-linear: a block-linear surface is only importable
+      // with the matching DRM modifier, and the zero-copy rungs take the plain
+      // linear path. Cheaper to let the ISP write linear than to teach every
+      // importer a vendor modifier.
+      p.params.layout = NVBUF_LAYOUT_PITCH;
+      p.params.memType = NVBUF_MEM_SURFACE_ARRAY;
+      p.memtag = NvBufSurfaceTag_CAMERA;
+      // Tight rows: the planar importers derive plane offsets assuming no row
+      // padding and refuse a padded pitch, so ask for none rather than be
+      // declined.
+      p.disablePitchPadding = true;
 
-    if(NvBufSurfaceMapEglImage(surf, 0) != 0
-       || !surf->surfaceList[0].mappedAddr.eglImage)
-    {
-      qWarning() << "Argus: NvBufSurfaceMapEglImage failed for slot" << i;
-      d->destroyPool();
-      return false;
-    }
-    d->pool[i].eglImage = surf->surfaceList[0].mappedAddr.eglImage;
-    d->pool[i].fd = int(surf->surfaceList[0].bufferDesc);
+      NvBufSurface* surf{};
+      if(NvBufSurfaceAllocate(&surf, 1, &p) != 0 || !surf)
+      {
+        qWarning() << "Argus: NvBufSurfaceAllocate failed for slot" << i;
+        d->destroyPool();
+        return false;
+      }
+      surf->numFilled = 1;
+      st.pool[i].surf = surf;
+      st.pool[i].index = i;
 
-    UniqueObj<BufferSettings> bufSettings(d->iStream->createBufferSettings());
-    auto* iBufSettings = interface_cast<IEGLImageBufferSettings>(bufSettings);
-    if(!iBufSettings)
-    {
-      qWarning() << "Argus: no IEGLImageBufferSettings";
-      d->destroyPool();
-      return false;
-    }
-    iBufSettings->setEGLDisplay(dpy);
-    iBufSettings->setEGLImage(d->pool[i].eglImage);
+      if(NvBufSurfaceMapEglImage(surf, 0) != 0
+         || !surf->surfaceList[0].mappedAddr.eglImage)
+      {
+        qWarning() << "Argus: NvBufSurfaceMapEglImage failed for slot" << i;
+        d->destroyPool();
+        return false;
+      }
+      st.pool[i].eglImage = surf->surfaceList[0].mappedAddr.eglImage;
+      st.pool[i].fd = int(surf->surfaceList[0].bufferDesc);
 
-    Buffer* buf = d->iStream->createBuffer(bufSettings.get());
-    auto* iBuf = interface_cast<IBuffer>(buf);
-    if(!buf || !iBuf)
-    {
-      qWarning() << "Argus: createBuffer failed for slot" << i;
-      d->destroyPool();
-      return false;
-    }
-    // The slot index travels with the Buffer, so acquireBuffer can be mapped
-    // back to our pool without a search.
-    iBuf->setClientData(reinterpret_cast<const void*>(std::uintptr_t(i)));
-    d->pool[i].buffer = buf;
+      UniqueObj<BufferSettings> bufSettings(st.iStream->createBufferSettings());
+      auto* iBufSettings = interface_cast<IEGLImageBufferSettings>(bufSettings);
+      if(!iBufSettings)
+      {
+        qWarning() << "Argus: no IEGLImageBufferSettings";
+        d->destroyPool();
+        return false;
+      }
+      iBufSettings->setEGLDisplay(dpy);
+      iBufSettings->setEGLImage(st.pool[i].eglImage);
 
-    // Publish the geometry the GPU side needs, taken from NvBufSurface rather
-    // than computed: it is the authority on where each plane starts.
-    const auto& sp = surf->surfaceList[0].planeParams;
-    auto& out = d->pub[i];
-    out.dmabufFd = d->pool[i].fd;
-    out.planeCount = std::min<std::uint32_t>(sp.num_planes, 3);
-    std::uint32_t total = 0;
-    for(std::uint32_t pl = 0; pl < out.planeCount; ++pl)
-    {
-      out.offset[pl] = sp.offset[pl];
-      out.pitch[pl] = sp.pitch[pl];
-      total = std::max(total, sp.offset[pl] + sp.psize[pl]);
-    }
-    out.totalBytes = total ? total : surf->surfaceList[0].dataSize;
+      Buffer* buf = st.iStream->createBuffer(bufSettings.get());
+      auto* iBuf = interface_cast<IBuffer>(buf);
+      if(!buf || !iBuf)
+      {
+        qWarning() << "Argus: createBuffer failed for slot" << i;
+        d->destroyPool();
+        return false;
+      }
+      // The slot index travels with the Buffer, so acquireBuffer can be mapped
+      // back to our pool without a search.
+      iBuf->setClientData(reinterpret_cast<const void*>(std::uintptr_t(i)));
+      st.pool[i].buffer = buf;
 
-    // Prime: a Buffer must be released before Argus may write into it.
-    d->iStream->releaseBuffer(buf);
+      // Publish the geometry the GPU side needs, taken from NvBufSurface rather
+      // than computed: it is the authority on where each plane starts.
+      const auto& sp = surf->surfaceList[0].planeParams;
+      auto& out = st.pub[i];
+      out.dmabufFd = st.pool[i].fd;
+      out.planeCount = std::min<std::uint32_t>(sp.num_planes, 3);
+      std::uint32_t total = 0;
+      for(std::uint32_t pl = 0; pl < out.planeCount; ++pl)
+      {
+        out.offset[pl] = sp.offset[pl];
+        out.pitch[pl] = sp.pitch[pl];
+        total = std::max(total, sp.offset[pl] + sp.psize[pl]);
+      }
+      out.totalBytes = total ? total : surf->surfaceList[0].dataSize;
+
+      // Prime: a Buffer must be released before Argus may write into it.
+      st.iStream->releaseBuffer(buf);
+    }
+
   }
 
-  d->frameBytes = d->pub.empty() ? 0 : d->pub[0].totalBytes;
+  static const std::vector<ArgusSlot> noSlots;
+  const auto& pub0 = d->streams.empty() ? noSlots : d->streams[0]->pub;
+  d->frameBytes = pub0.empty() ? 0 : pub0[0].totalBytes;
 
   // Report where the real layout differs from a tight one. The backend passes
   // these offsets down explicitly so the zero-copy rungs use them verbatim, so
   // this is information rather than a problem -- but it is worth saying, since
   // a producer whose planes are NOT tightly packed is exactly the case a
   // derivation gets wrong, and knowing which allocator does that is useful.
-  if(d->set.verbose && !d->pub.empty() && d->pub[0].planeCount > 1)
+  if(d->set.verbose && !pub0.empty() && pub0[0].planeCount > 1)
   {
-    const auto& s0 = d->pub[0];
+    const auto& s0 = pub0[0];
     std::uint32_t tight = 0;
     for(std::uint32_t pl = 0; pl < s0.planeCount; ++pl)
     {
@@ -546,11 +636,23 @@ bool ArgusSession::open(const ArgusSettings& settings)
   // --- request --------------------------------------------------------------
   d->request = UniqueObj<Request>(d->iSession->createRequest());
   auto* iReq = interface_cast<IRequest>(d->request);
-  if(!iReq || iReq->enableOutputStream(d->stream.get()) != STATUS_OK)
+  if(!iReq)
   {
     qWarning() << "Argus: cannot build the capture request";
     d->destroyPool();
     return false;
+  }
+  // One Request driving every stream is the mechanism: the sensors expose
+  // together because they are told to capture together, not because their
+  // frames are matched up afterwards.
+  for(auto& stp : d->streams)
+  {
+    if(iReq->enableOutputStream(stp->stream.get()) != STATUS_OK)
+    {
+      qWarning() << "Argus: enableOutputStream failed";
+      d->destroyPool();
+      return false;
+    }
   }
 
   auto* src = interface_cast<ISourceSettings>(iReq->getSourceSettings());
@@ -651,9 +753,11 @@ bool ArgusSession::open(const ArgusSettings& settings)
 bool ArgusSession::mapHost()
 {
   bool all = true;
-  for(std::size_t i = 0; i < d->pool.size(); ++i)
+  for(auto& stp : d->streams)
+  for(std::size_t i = 0; i < stp->pool.size(); ++i)
   {
-    auto& s = d->pool[i];
+    auto& st = *stp;
+    auto& s = st.pool[i];
     if(!s.surf)
       continue;
     // plane = -1 maps every plane. Passing 0 maps only luma, and then
@@ -670,8 +774,8 @@ bool ArgusSession::mapHost()
     // be contiguous, so one base pointer plus an offset is not enough.
     const auto& sp = s.surf->surfaceList[0].planeParams;
     for(std::uint32_t pl = 0; pl < sp.num_planes && pl < 3; ++pl)
-      d->pub[i].planeHost[pl] = s.surf->surfaceList[0].mappedAddr.addr[pl];
-    d->pub[i].host = d->pub[i].planeHost[0];
+      st.pub[i].planeHost[pl] = s.surf->surfaceList[0].mappedAddr.addr[pl];
+    st.pub[i].host = st.pub[i].planeHost[0];
   }
   return all;
 }
@@ -681,7 +785,8 @@ bool ArgusSession::start(
         onFrame,
     std::function<std::uint32_t(std::size_t)> takeReturned)
 {
-  if(!d->iSession || !d->iStream || d->running.load())
+  if(!d->iSession || d->streams.empty() || !d->streams[0]->iStream
+     || d->running.load())
     return false;
 
   if(d->iSession->repeat(d->request.get()) != STATUS_OK)
@@ -695,23 +800,53 @@ bool ArgusSession::start(
                            takeReturned = std::move(takeReturned)] {
     while(d->running.load(std::memory_order_acquire))
     {
-      Status st = STATUS_OK;
-      Buffer* buf = d->iStream->acquireBuffer(d->set.acquireTimeoutNs, &st);
-      if(!buf || st != STATUS_OK)
+      IBuffer* bufStream0 = nullptr;
+      // One capture delivers one buffer per stream. Acquire them all before
+      // publishing anything: half a capture must never be visible downstream,
+      // which is the whole reason the renderer can trust the set it is given.
+      const std::size_t ns = d->streams.size();
+      std::size_t slotIdx[kMaxSyncSensors]{};
+      std::uint64_t stamps[kMaxSyncSensors]{};
+      Buffer* acquired[kMaxSyncSensors]{};
+      std::size_t got = 0;
+      bool endOfStream = false;
+      for(std::size_t si = 0; si < ns && si < kMaxSyncSensors; ++si)
       {
-        // A timeout on a live sensor means the ISP stalled; keep looping so a
-        // recovering sensor resumes, but do not spin on a dead stream.
-        if(st == STATUS_END_OF_STREAM)
+        Status st = STATUS_OK;
+        Buffer* b = d->streams[si]->iStream->acquireBuffer(
+            d->set.acquireTimeoutNs, &st);
+        if(!b || st != STATUS_OK)
+        {
+          // A timeout on a live sensor means the ISP stalled; keep looping so a
+          // recovering sensor resumes, but do not spin on a dead stream.
+          if(st == STATUS_END_OF_STREAM)
+            endOfStream = true;
+          break;
+        }
+        acquired[si] = b;
+        ++got;
+        auto* ib = interface_cast<IBuffer>(b);
+        slotIdx[si] = ib ? std::size_t(reinterpret_cast<std::uintptr_t>(
+                               ib->getClientData()))
+                         : std::size_t(0);
+        if(si == 0)
+          bufStream0 = ib;
+      }
+      if(got != ns)
+      {
+        // Partial capture: give back what we took. Dropping them here would
+        // drain the pools a few frames at a time and present as a sensor that
+        // slowly stops delivering.
+        for(std::size_t si = 0; si < got; ++si)
+          d->streams[si]->iStream->releaseBuffer(acquired[si]);
+        if(endOfStream)
           break;
         continue;
       }
 
-      auto* iBuf = interface_cast<IBuffer>(buf);
+      auto* iBuf = bufStream0;
       std::uint64_t sofTsc = 0;
-      const auto slot
-          = iBuf ? std::size_t(reinterpret_cast<std::uintptr_t>(
-                       iBuf->getClientData()))
-                 : std::size_t(0);
+      const auto slot = slotIdx[0];
 
       // Sensor start-of-frame -> here. Measured before publishing so it is the
       // same span nvarguscamerasrc's show-latency reports, and therefore
@@ -767,9 +902,10 @@ bool ArgusSession::start(
 
       // Dump before publishing: after it, the renderer owns the slot and the
       // ISP may already be refilling it.
-      if(!d->dumpPrefix.isEmpty() && n <= d->dumpCount && slot < d->pub.size())
+      if(!d->dumpPrefix.isEmpty() && n <= d->dumpCount
+         && slot < d->streams[0]->pub.size())
       {
-        const auto& ps = d->pub[slot];
+        const auto& ps = d->streams[0]->pub[slot];
         dumpFrame(
             d->dumpPrefix, n, ps.planeHost, ps.totalBytes, d->w, d->h,
             ps.offset, ps.pitch, ps.planeCount);
@@ -777,9 +913,8 @@ bool ArgusSession::start(
 
       if(onFrame)
       {
-        const std::size_t slotIdx[1]{slot};
-        const std::uint64_t stamps[1]{sofTsc};
-        onFrame(slotIdx, stamps, 1);
+        stamps[0] = sofTsc;
+        onFrame(slotIdx, stamps, ns);
       }
 
       // Periodic, not per-frame: at 60 fps a per-frame line is its own
@@ -813,14 +948,18 @@ bool ArgusSession::start(
       // we just published would let the ISP overwrite the frame being sampled.
       if(takeReturned)
       {
-        std::uint32_t mask = takeReturned(0);
-        for(std::size_t i = 0; mask && i < d->pool.size(); ++i)
+        for(std::size_t si = 0; si < ns; ++si)
         {
-          if(mask & (1u << i))
+          auto& stm = *d->streams[si];
+          std::uint32_t mask = takeReturned(si);
+          for(std::size_t i = 0; mask && i < stm.pool.size(); ++i)
           {
-            if(d->pool[i].buffer)
-              d->iStream->releaseBuffer(d->pool[i].buffer);
-            mask &= ~(1u << i);
+            if(mask & (1u << i))
+            {
+              if(stm.pool[i].buffer)
+                stm.iStream->releaseBuffer(stm.pool[i].buffer);
+              mask &= ~(1u << i);
+            }
           }
         }
       }
@@ -837,8 +976,9 @@ void ArgusSession::stop()
       d->thread.join();
     return;
   }
-  if(d->iStream)
-    d->iStream->endOfStream();
+  for(auto& stp : d->streams)
+    if(stp->iStream)
+      stp->iStream->endOfStream();
   if(d->thread.joinable())
     d->thread.join();
   if(d->iSession)
@@ -855,8 +995,7 @@ void ArgusSession::close()
   stop();
   d->destroyPool();
   d->request.reset();
-  d->stream.reset();
-  d->iStream = nullptr;
+
   d->session.reset();
   d->iSession = nullptr;
   d->w = d->h = d->frameBytes = 0;

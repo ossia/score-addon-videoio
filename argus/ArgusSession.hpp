@@ -45,6 +45,11 @@ namespace Gfx::Argus
 {
 
 /// One pool slot as the GPU side needs to see it.
+/// Upper bound on sensors in one synchronised session. Argus's dual-sensor
+/// support is the documented case; the array bounds here are what keep a
+/// mis-configured settings object from indexing off the end.
+inline constexpr std::size_t kMaxSyncSensors = 4;
+
 struct ArgusSlot
 {
   int dmabufFd{-1};
@@ -86,6 +91,11 @@ public:
   std::int32_t resolvedSensorMode() const noexcept;
   double resolvedFrameRate() const noexcept;
 
+  /// Number of sensors in this session: 1 unless it is a synchronised rig.
+  std::size_t streamCount() const noexcept;
+
+  /// Slots of sensor `stream`. slots() is slots(0).
+  const std::vector<ArgusSlot>& slots(std::size_t stream) const noexcept;
   const std::vector<ArgusSlot>& slots() const noexcept;
 
   /// Map every slot into host memory. Only needed by the CPU rung; the

@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace Gfx::Argus
 {
@@ -75,6 +76,15 @@ struct ArgusSettings
 {
   /// Index into ICameraProvider::getCameraDevices().
   std::uint32_t sensorId{0};
+
+  /// Sensors to drive from ONE synchronised capture session, for a rig whose
+  /// eyes must expose together. Empty means "just sensorId".
+  ///
+  /// More than one entry is what buys hardware synchronisation: a single
+  /// CaptureSession means one AE/AWB loop, one Request and one repeat clock for
+  /// all of them. Two sessions would give two of each, and nothing downstream
+  /// can reconstruct a synchronisation the capture never had.
+  std::vector<std::uint32_t> sensorIds{};
 
   /// -1 selects the smallest mode that satisfies the requested geometry and
   /// rate, matching the plugin's own algorithm. Anything else is used verbatim.
