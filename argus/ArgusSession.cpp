@@ -421,7 +421,13 @@ bool ArgusSession::open(const ArgusSettings& settings)
   if(dpy == EGL_NO_DISPLAY)
     return false;
 
-  const auto n = std::max<std::size_t>(settings.bufferCount, 4);
+  auto want = settings.bufferCount;
+  // The borrowed contract keeps a slot from the ISP until the renderer has
+  // finished with it, so the pool depth bounds throughput, not just memory.
+  // Overridable so the depth can be swept without a rebuild.
+  if(const auto env = qgetenv("SCORE_ARGUS_BUFFERS").toULongLong(); env >= 4)
+    want = env;
+  const auto n = std::max<std::size_t>(want, 4);
   d->pool.resize(n);
   d->pub.resize(n);
 
