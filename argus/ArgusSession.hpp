@@ -99,9 +99,15 @@ public:
   ///    filled; it must publish and return promptly.
   /// @p takeReturned is polled each iteration for the bitmask of slots the
   ///    renderer has finished with; those are released back to Argus.
+  /// Start the capture. `onFrames` is called once per capture with the slot
+  /// each stream filled and its start-of-frame stamp on the Tegra TSC (0 when
+  /// the timestamp extension is unavailable). One entry today; a multi-sensor
+  /// session reports the whole set in one call, which is what lets the renderer
+  /// bind frames belonging to the same capture.
   bool start(
-      std::function<void(std::size_t)> onFrame,
-      std::function<std::uint32_t()> takeReturned);
+      std::function<void(const std::size_t*, const std::uint64_t*, std::size_t)>
+          onFrames,
+      std::function<std::uint32_t(std::size_t)> takeReturned);
   void stop();
 
   /// Frames Argus has handed us. The device's own cadence, independent of how

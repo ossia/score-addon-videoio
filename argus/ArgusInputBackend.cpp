@@ -229,7 +229,11 @@ void ArgusInputBackend::start()
 
   m_session.start(
       // Capture thread: publish the slot the ISP just filled.
-      [this, slotCount](std::size_t slot) {
+      [this, slotCount](
+          const std::size_t* slots, const std::uint64_t*, std::size_t n) {
+        if(n != 1)
+          return;
+        const auto slot = slots[0];
         if(slot >= slotCount)
           return;
         if(m_strategy)
@@ -244,7 +248,7 @@ void ArgusInputBackend::start()
         m_ring.latestFrameId.fetch_add(1, std::memory_order_release);
       },
       // Capture thread: which slots may go back to the ISP.
-      [this, slotCount]() -> std::uint32_t {
+      [this, slotCount](std::size_t) -> std::uint32_t {
         if(m_dmabuf)
           return m_dmabuf->takeReturnedSlots();
         if(m_borrowed)

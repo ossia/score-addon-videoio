@@ -9,6 +9,10 @@
 
 #if defined(SCORE_HAS_ARGUS)
 #include <Argus/Argus.h>
+#if __has_include(<Argus/Ext/SensorTimestampTsc.h>)
+#include <Argus/Ext/SensorTimestampTsc.h>
+#define SCORE_ARGUS_HAS_TSC_TIMESTAMP 1
+#endif
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <argus/ArgusRuntimeInternal.hpp>
@@ -64,7 +68,8 @@ bool ArgusSession::mapHost()
   return false;
 }
 bool ArgusSession::start(
-    std::function<void(std::size_t)>, std::function<std::uint32_t()>)
+    std::function<void(const std::size_t*, const std::uint64_t*, std::size_t)>,
+    std::function<std::uint32_t(std::size_t)>)
 {
   return false;
 }
@@ -672,8 +677,9 @@ bool ArgusSession::mapHost()
 }
 
 bool ArgusSession::start(
-    std::function<void(std::size_t)> onFrame,
-    std::function<std::uint32_t()> takeReturned)
+    std::function<void(const std::size_t*, const std::uint64_t*, std::size_t)>
+        onFrame,
+    std::function<std::uint32_t(std::size_t)> takeReturned)
 {
   if(!d->iSession || !d->iStream || d->running.load())
     return false;
@@ -701,6 +707,7 @@ bool ArgusSession::start(
       }
 
       auto* iBuf = interface_cast<IBuffer>(buf);
+      std::uint64_t sofTsc = 0;
       const auto slot
           = iBuf ? std::size_t(reinterpret_cast<std::uintptr_t>(
                        iBuf->getClientData()))
@@ -716,6 +723,17 @@ bool ArgusSession::start(
           if(auto* iMd = interface_cast<const ICaptureMetadata>(md))
           {
             const auto sensorNs = iMd->getSensorTimestamp();
+#if defined(SCORE_ARGUS_HAS_TSC_TIMESTAMP)
+            // The VI hardware start-of-frame on the Tegra-wide TSC -- the same
+            // counter the V4L2 buffer stamps and cntvct_el0 use, so capture,
+            // render and any external reference compare without conversion.
+            // Deliberately NOT falling back to sensorNs when this is
+            // unavailable: they are different clock domains, and a skew computed
+            // across the two would be a plausible-looking fiction. Zero means
+            // "no stamp", which the sync group already skips.
+            if(auto* iTsc = interface_cast<const Ext::ISensorTimestampTsc>(md))
+              sofTsc = iTsc->getSensorSofTimestampTsc();
+#endif
             timespec ts{};
             clock_gettime(CLOCK_MONOTONIC, &ts);
             const auto nowNs
@@ -758,7 +776,11 @@ bool ArgusSession::start(
       }
 
       if(onFrame)
-        onFrame(slot);
+      {
+        const std::size_t slotIdx[1]{slot};
+        const std::uint64_t stamps[1]{sofTsc};
+        onFrame(slotIdx, stamps, 1);
+      }
 
       // Periodic, not per-frame: at 60 fps a per-frame line is its own
       // performance problem, and the comparison against gst wants a stable
@@ -791,7 +813,7 @@ bool ArgusSession::start(
       // we just published would let the ISP overwrite the frame being sampled.
       if(takeReturned)
       {
-        std::uint32_t mask = takeReturned();
+        std::uint32_t mask = takeReturned(0);
         for(std::size_t i = 0; mask && i < d->pool.size(); ++i)
         {
           if(mask & (1u << i))
