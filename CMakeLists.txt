@@ -40,7 +40,13 @@ set(VIDEOIO_INCS "")
 # verbatim. Independently optional: gated on the submodule being checked out.
 set(VIDEOIO_AJA_SDK_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/libajantv2"
     CACHE PATH "AJA SDK root directory")
-if(EXISTS "${VIDEOIO_AJA_SDK_ROOT}/ajantv2/includes/ntv2card.h")
+# Presence of the submodule is not sufficient: the vendored SDK does not
+# cross-compile everywhere (on aarch64/Tegra with a C++23 libc++ its
+# ENDIAN_32NtoH and `endian` clash with std::endian), and a checkout that
+# happens to include it must still be buildable there. Default ON so existing
+# builds are unchanged.
+option(VIDEOIO_ENABLE_AJA "Build the vendored AJA SDK and the AJA backend" ON)
+if(VIDEOIO_ENABLE_AJA AND EXISTS "${VIDEOIO_AJA_SDK_ROOT}/ajantv2/includes/ntv2card.h")
   # Build the vendored AJA SDK as a static lib named `ajantv2`. Guarded so it
   # coexists with a still-present (deprecated) score-addon-aja in the same tree.
   if(NOT TARGET ajantv2)
@@ -130,7 +136,19 @@ find_library(ARGUS_LIBRARY
   PATHS "${CMAKE_SYSROOT}/usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}/nvidia"
         "${CMAKE_SYSROOT}/usr/lib/aarch64-linux-gnu/nvidia"
         "${CMAKE_SYSROOT}/usr/lib")
-if(ARGUS_LIBRARY AND EXISTS "${JETSON_MMAPI_ROOT}/argus/include/Argus/Argus.h")
+# Two layouts in the wild, and only checking one silently compiles the backend
+# out with a "not found" line nobody reads:
+#  * JetPack on-device / SDK tree: <root>/argus/include/Argus/Argus.h
+#  * Yocto sysroot (tegra-mmapi):  <sysroot>/usr/include/Argus/Argus.h
+set(ARGUS_INCLUDE_DIRS "")
+if(EXISTS "${JETSON_MMAPI_ROOT}/argus/include/Argus/Argus.h")
+  set(ARGUS_INCLUDE_DIRS "${JETSON_MMAPI_ROOT}/argus/include" "${JETSON_MMAPI_ROOT}/include")
+elseif(EXISTS "${CMAKE_SYSROOT}/usr/include/Argus/Argus.h")
+  # Already on the default include path; no -I needed, but record that it was
+  # found so the branch below is taken.
+  set(ARGUS_INCLUDE_DIRS "${CMAKE_SYSROOT}/usr/include")
+endif()
+if(ARGUS_LIBRARY AND ARGUS_INCLUDE_DIRS)
   list(APPEND VIDEOIO_HDRS
     "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusSettings.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusRuntime.hpp"
@@ -144,9 +162,7 @@ if(ARGUS_LIBRARY AND EXISTS "${JETSON_MMAPI_ROOT}/argus/include/Argus/Argus.h")
     "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusInputBackend.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusCaptureNode.cpp")
   list(APPEND VIDEOIO_DEFS SCORE_HAS_ARGUS=1)
-  list(APPEND VIDEOIO_INCS
-    "${JETSON_MMAPI_ROOT}/argus/include"
-    "${JETSON_MMAPI_ROOT}/include")
+  list(APPEND VIDEOIO_INCS ${ARGUS_INCLUDE_DIRS})
   set(VIDEOIO_HAS_ARGUS TRUE)
   message(STATUS "score-addon-videoio: NVIDIA Argus enabled (${ARGUS_LIBRARY})")
 else()
