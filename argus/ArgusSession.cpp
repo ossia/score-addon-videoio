@@ -3,6 +3,7 @@
 #include <QDebug>
 
 #include <atomic>
+#include <ctime>
 #include <thread>
 
 #if defined(SCORE_HAS_ARGUS)
@@ -71,6 +72,11 @@ std::uint64_t ArgusSession::capturedFrames() const noexcept
 {
   return 0;
 }
+ArgusSession::LatencyStats ArgusSession::latency() const noexcept
+{
+  return {};
+}
+void ArgusSession::resetLatency() noexcept { }
 
 #else
 
@@ -183,6 +189,11 @@ struct ArgusSession::Impl
   std::atomic<bool> running{false};
   std::atomic<std::uint64_t> frames{0};
 
+  // Latency accumulators. Written only by the capture thread, read by anyone;
+  // relaxed is enough since they are statistics, not a synchronisation signal.
+  std::atomic<std::uint64_t> latCount{0}, latUnusable{0};
+  std::atomic<std::uint64_t> latMin{~0ull}, latMax{0}, latSum{0};
+
   void destroyPool()
   {
     for(auto& s : pool)
@@ -243,6 +254,28 @@ const std::vector<ArgusSlot>& ArgusSession::slots() const noexcept
 std::uint64_t ArgusSession::capturedFrames() const noexcept
 {
   return d->frames.load(std::memory_order_acquire);
+}
+
+ArgusSession::LatencyStats ArgusSession::latency() const noexcept
+{
+  LatencyStats r;
+  r.count = d->latCount.load(std::memory_order_relaxed);
+  r.unusable = d->latUnusable.load(std::memory_order_relaxed);
+  if(r.count == 0)
+    return r;
+  r.minNs = d->latMin.load(std::memory_order_relaxed);
+  r.maxNs = d->latMax.load(std::memory_order_relaxed);
+  r.meanNs = double(d->latSum.load(std::memory_order_relaxed)) / double(r.count);
+  return r;
+}
+
+void ArgusSession::resetLatency() noexcept
+{
+  d->latCount.store(0, std::memory_order_relaxed);
+  d->latUnusable.store(0, std::memory_order_relaxed);
+  d->latMin.store(~0ull, std::memory_order_relaxed);
+  d->latMax.store(0, std::memory_order_relaxed);
+  d->latSum.store(0, std::memory_order_relaxed);
 }
 
 bool ArgusSession::open(const ArgusSettings& settings)
@@ -593,9 +626,75 @@ bool ArgusSession::start(
                        iBuf->getClientData()))
                  : std::size_t(0);
 
-      d->frames.fetch_add(1, std::memory_order_release);
+      // Sensor start-of-frame -> here. Measured before publishing so it is the
+      // same span nvarguscamerasrc's show-latency reports, and therefore
+      // directly comparable to it.
+      if(iBuf)
+      {
+        if(const auto* md = iBuf->getMetadata())
+        {
+          if(auto* iMd = interface_cast<const ICaptureMetadata>(md))
+          {
+            const auto sensorNs = iMd->getSensorTimestamp();
+            timespec ts{};
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            const auto nowNs
+                = std::uint64_t(ts.tv_sec) * 1000000000ull + std::uint64_t(ts.tv_nsec);
+            // Argus stamps on the monotonic clock. If that ever stops being
+            // true the subtraction yields nonsense, so implausible values are
+            // counted rather than averaged into a confident wrong figure.
+            if(sensorNs != 0 && nowNs > sensorNs && (nowNs - sensorNs) < 10'000'000'000ull)
+            {
+              const auto lat = nowNs - sensorNs;
+              d->latSum.fetch_add(lat, std::memory_order_relaxed);
+              d->latCount.fetch_add(1, std::memory_order_relaxed);
+              auto prev = d->latMin.load(std::memory_order_relaxed);
+              while(lat < prev
+                    && !d->latMin.compare_exchange_weak(prev, lat, std::memory_order_relaxed))
+                ;
+              prev = d->latMax.load(std::memory_order_relaxed);
+              while(lat > prev
+                    && !d->latMax.compare_exchange_weak(prev, lat, std::memory_order_relaxed))
+                ;
+            }
+            else
+            {
+              d->latUnusable.fetch_add(1, std::memory_order_relaxed);
+            }
+          }
+        }
+      }
+
+      const auto n = d->frames.fetch_add(1, std::memory_order_release) + 1;
       if(onFrame)
         onFrame(slot);
+
+      // Periodic, not per-frame: at 60 fps a per-frame line is its own
+      // performance problem, and the comparison against gst wants a stable
+      // aggregate rather than a stream of instants.
+      if(d->set.verbose && (n % 120) == 0)
+      {
+        const auto c = d->latCount.load(std::memory_order_relaxed);
+        const auto u = d->latUnusable.load(std::memory_order_relaxed);
+        if(c > 0)
+        {
+          qDebug(
+              "Argus: latency over %llu frames: min %.2f ms  mean %.2f ms  max "
+              "%.2f ms  (unusable %llu)",
+              (unsigned long long)c,
+              d->latMin.load(std::memory_order_relaxed) / 1e6,
+              double(d->latSum.load(std::memory_order_relaxed)) / double(c) / 1e6,
+              d->latMax.load(std::memory_order_relaxed) / 1e6,
+              (unsigned long long)u);
+        }
+        else if(u > 0)
+        {
+          qDebug(
+              "Argus: %llu frames had an unusable sensor timestamp; no latency "
+              "figure",
+              (unsigned long long)u);
+        }
+      }
 
       // Give back only what the renderer has finished with. Releasing the slot
       // we just published would let the ISP overwrite the frame being sampled.

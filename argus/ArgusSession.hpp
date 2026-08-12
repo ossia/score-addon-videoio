@@ -105,6 +105,29 @@ public:
   /// rate cannot tell a stalled sensor from a slow renderer.
   std::uint64_t capturedFrames() const noexcept;
 
+  /// Sensor-start-of-frame to frame-published, in nanoseconds.
+  ///
+  /// Deliberately the same span nvarguscamerasrc's `show-latency` reports
+  /// ("capture latency between start of frame and GstBuffer push"), so the two
+  /// numbers can be compared directly rather than through two different
+  /// definitions of "latency".
+  ///
+  /// `unusable` counts frames whose sensor timestamp did not land in a
+  /// plausible range relative to CLOCK_MONOTONIC. Argus is documented to stamp
+  /// on the monotonic clock, but a mismatch there would otherwise produce a
+  /// confident and completely wrong figure, so those frames are excluded and
+  /// counted instead.
+  struct LatencyStats
+  {
+    std::uint64_t count{};
+    std::uint64_t unusable{};
+    std::uint64_t minNs{};
+    std::uint64_t maxNs{};
+    double meanNs{};
+  };
+  LatencyStats latency() const noexcept;
+  void resetLatency() noexcept;
+
 private:
   struct Impl;
   std::unique_ptr<Impl> d;
