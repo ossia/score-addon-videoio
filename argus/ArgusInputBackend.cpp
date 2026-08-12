@@ -101,11 +101,15 @@ ArgusInputBackend::makeDmaBufRung()
   {
     if(s.dmabufFd < 0)
       return {};
-    // Plane 0's offset and pitch; the importer derives the chroma plane from
-    // the decoder's plane textures, and the session already warned if
-    // NvBufSurface disagreed with that derivation.
-    descs.push_back(
-        {s.dmabufFd, /*modifier, pitch-linear*/ 0ull, s.offset[0], s.pitch[0]});
+    // State the layout rather than let it be derived: NvBufSurface aligns each
+    // plane offset to 64 KB even with row padding disabled, so a derived chroma
+    // offset lands in the wrong place and the rung declines.
+    score::gfx::interop::DmaBufSlotDesc d{
+        s.dmabufFd, /*modifier, pitch-linear*/ 0ull, s.offset[0], s.pitch[0]};
+    d.planeCount = s.planeCount;
+    for(std::uint32_t p = 0; p < s.planeCount && p < 3; ++p)
+      d.planes[p] = {s.offset[p], s.pitch[p]};
+    descs.push_back(d);
   }
 
   auto strat = std::make_unique<score::gfx::interop::DmaBufImportCapture>(
@@ -132,7 +136,11 @@ ArgusInputBackend::makeBorrowedRung()
   {
     if(!s.host)
       return {};
-    bufs.push_back({s.host, std::size_t(s.totalBytes)});
+    score::gfx::interop::BorrowedHostBuffer b{s.host, std::size_t(s.totalBytes)};
+    b.planeCount = s.planeCount;
+    for(std::uint32_t p = 0; p < s.planeCount && p < 3; ++p)
+      b.planes[p] = {s.offset[p], s.pitch[p]};
+    bufs.push_back(b);
   }
 
   auto strat = std::make_unique<score::gfx::interop::BorrowedHostImportCapture>(

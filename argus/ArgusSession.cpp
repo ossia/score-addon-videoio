@@ -458,26 +458,26 @@ bool ArgusSession::open(const ArgusSettings& settings)
 
   d->frameBytes = d->pub.empty() ? 0 : d->pub[0].totalBytes;
 
-  // Cross-check the layout the planar importers will derive (tight packing,
-  // offsets accumulating) against what NvBufSurface actually reports. They
-  // should agree because disablePitchPadding was requested; if they do not,
-  // say so loudly rather than let the zero-copy rung sample chroma from the
-  // wrong offset.
-  if(!d->pub.empty() && d->pub[0].planeCount > 1)
+  // Report where the real layout differs from a tight one. The backend passes
+  // these offsets down explicitly so the zero-copy rungs use them verbatim, so
+  // this is information rather than a problem -- but it is worth saying, since
+  // a producer whose planes are NOT tightly packed is exactly the case a
+  // derivation gets wrong, and knowing which allocator does that is useful.
+  if(d->set.verbose && !d->pub.empty() && d->pub[0].planeCount > 1)
   {
     const auto& s0 = d->pub[0];
-    std::uint32_t derived = 0;
+    std::uint32_t tight = 0;
     for(std::uint32_t pl = 0; pl < s0.planeCount; ++pl)
     {
-      if(s0.offset[pl] != derived)
+      if(s0.offset[pl] != tight)
       {
-        qWarning() << "Argus: plane" << pl << "starts at" << s0.offset[pl]
-                   << "but a tight layout would put it at" << derived
-                   << "-- the zero-copy rungs will be declined";
+        qDebug() << "Argus: plane" << pl << "starts at" << s0.offset[pl]
+                 << "where a tight layout would put it at" << tight
+                 << "-- using the reported layout";
         break;
       }
       const auto ph = (pl == 0) ? d->h : (d->h + 1) / 2;
-      derived += s0.pitch[pl] * ph;
+      tight += s0.pitch[pl] * ph;
     }
   }
 
