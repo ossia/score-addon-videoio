@@ -80,6 +80,12 @@ private:
   ArgusSession m_session;
 
   score::gfx::interop::VideoCaptureStrategy* m_strategy{};
+
+  /// Decided in pickStrategies and read by makeDecoder, which runs after it.
+  /// The external-image rung and its decoder are a matched pair: the sampler
+  /// converts YUV itself, so neither works with the other's counterpart.
+  bool m_wantExternal{false};
+
   /// Set when the engaged strategy honours the borrowed contract, i.e. it will
   /// tell us which slots may go back to the ISP. A strategy that does not (the
   /// CPU rung copies out) leaves this null and every slot is released at once.

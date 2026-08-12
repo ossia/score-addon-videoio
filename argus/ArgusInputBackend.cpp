@@ -1,5 +1,6 @@
 #include "ArgusInputBackend.hpp"
 
+#include <Gfx/Graph/decoders/NV12ExternalOES.hpp>
 #include <Gfx/Graph/decoders/WireDecoderFactory.hpp>
 #include <Gfx/Graph/interop/BorrowedHostImportCapture.hpp>
 #include <Gfx/Graph/interop/CpuStagedCapture.hpp>
@@ -83,6 +84,15 @@ Video::ImageFormat ArgusInputBackend::imageFormat() const
 std::unique_ptr<score::gfx::GPUVideoDecoder>
 ArgusInputBackend::makeDecoder(Video::VideoMetadata& meta)
 {
+  // pickStrategies() runs before this (DMACaptureInputNode::init probes caps
+  // and builds the ladder first), so by now we know whether the external-image
+  // rung is on the table. It matters: an external sampler returns RGB already
+  // converted, so pairing it with the ordinary NV12 decoder would convert
+  // twice, and pairing the ordinary rungs with this decoder would show raw
+  // luma. The two must be chosen together.
+  if(m_wantExternal)
+    return std::make_unique<score::gfx::NV12ExternalOESDecoder>(meta);
+
   return score::gfx::makeWireDecoder(
       score::gfx::interop::VideoPixelFormat::NV12, meta);
 }
@@ -114,6 +124,12 @@ ArgusInputBackend::makeDmaBufRung()
 
   auto strat = std::make_unique<score::gfx::interop::DmaBufImportCapture>(
       "Argus", std::move(descs));
+  if(m_wantExternal)
+  {
+    // DRM_FORMAT_NV12, spelled out to avoid a drm_fourcc.h dependency.
+    constexpr std::uint32_t DRM_NV12 = 0x3231564eu;
+    strat->requestExternalImage(DRM_NV12, int(m_session.height()));
+  }
   m_dmabuf = strat.get();
   return strat;
 #else
@@ -163,10 +179,15 @@ ArgusInputBackend::pickStrategy(
 
 std::vector<std::function<std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>()>>
 ArgusInputBackend::pickStrategies(
-    QRhi::Implementation, const score::gfx::interop::GpuCapabilities&)
+    QRhi::Implementation backend, const score::gfx::interop::GpuCapabilities&)
 {
   m_dmabuf = nullptr;
   m_borrowed = nullptr;
+  // Probed here because makeDecoder runs after this and must pick the matching
+  // decoder; by then the QRhi backend and GL context are both known.
+  m_wantExternal = score::gfx::nv12ExternalOesUsable(backend);
+  if(m_wantExternal)
+    qDebug() << "Argus: external-image NV12 import available";
 
   std::vector<std::function<std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>()>> v;
   // Best first. Whether either works is only knowable by initialising it: the
