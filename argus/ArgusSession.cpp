@@ -1,6 +1,7 @@
 #include "ArgusSession.hpp"
 
 #include <QDebug>
+#include <QFile>
 
 #include <atomic>
 #include <ctime>
@@ -106,6 +107,45 @@ EGLDisplay eglDisplayForArgus()
   return dpy;
 }
 
+/// Write one NV12 frame to disk, plus a sidecar describing its layout.
+///
+/// Gated on SCORE_ARGUS_DUMP because it costs a full-frame write. It exists
+/// because the render-side grab does not work on this board, so without it
+/// there is no way to look at what the ISP actually produced -- and "the rung
+/// engaged" is not evidence that the pixels are right.
+void dumpFrame(
+    const QByteArray& prefix, std::uint64_t n, const void* host,
+    std::uint32_t bytes, std::uint32_t w, std::uint32_t h,
+    const std::uint32_t* offsets, const std::uint32_t* pitches,
+    std::uint32_t planeCount)
+{
+  if(!host || bytes == 0)
+    return;
+  const QString base
+      = QString::fromUtf8(prefix) + QStringLiteral("-%1").arg(n, 3, 10, QChar('0'));
+  QFile f(base + ".nv12");
+  if(!f.open(QIODevice::WriteOnly))
+  {
+    qWarning() << "Argus: cannot write" << f.fileName();
+    return;
+  }
+  f.write(static_cast<const char*>(host), qint64(bytes));
+  f.close();
+
+  QFile m(base + ".txt");
+  if(m.open(QIODevice::WriteOnly))
+  {
+    QString t = QStringLiteral("NV12 %1x%2 bytes=%3 planes=%4\n")
+                    .arg(w).arg(h).arg(bytes).arg(planeCount);
+    for(std::uint32_t i = 0; i < planeCount && i < 3; ++i)
+      t += QStringLiteral("plane%1 offset=%2 pitch=%3\n")
+               .arg(i).arg(offsets[i]).arg(pitches[i]);
+    m.write(t.toUtf8());
+    m.close();
+  }
+  qDebug() << "Argus: wrote" << f.fileName() << bytes << "bytes";
+}
+
 AeAntibandingMode toArgus(AeAntibanding v)
 {
   switch(v)
@@ -191,6 +231,9 @@ struct ArgusSession::Impl
 
   // Latency accumulators. Written only by the capture thread, read by anyone;
   // relaxed is enough since they are statistics, not a synchronisation signal.
+  QByteArray dumpPrefix;
+  std::uint64_t dumpCount{3};
+
   std::atomic<std::uint64_t> latCount{0}, latUnusable{0};
   std::atomic<std::uint64_t> latMin{~0ull}, latMax{0}, latSum{0};
 
@@ -564,6 +607,21 @@ bool ArgusSession::open(const ArgusSettings& settings)
       ee->setEdgeEnhanceStrength(settings.edgeEnhanceStrength);
   }
 
+  // SCORE_ARGUS_DUMP=<prefix> writes the first few frames to disk. It needs the
+  // host mapping, which the zero-copy rungs otherwise never take, so it is
+  // requested here rather than left to whichever rung wins.
+  d->dumpPrefix = qgetenv("SCORE_ARGUS_DUMP");
+  if(!d->dumpPrefix.isEmpty())
+  {
+    if(const auto c = qgetenv("SCORE_ARGUS_DUMP_COUNT").toULongLong(); c > 0)
+      d->dumpCount = c;
+    if(!mapHost())
+      qWarning() << "Argus: dump requested but the surfaces would not map";
+    else
+      qDebug() << "Argus: dumping the first" << d->dumpCount << "frames to"
+               << d->dumpPrefix;
+  }
+
   if(settings.verbose)
     qDebug() << "Argus: opened" << d->w << "x" << d->h << "NV12," << n
              << "buffers," << d->frameBytes << "bytes/frame, mode" << d->mode
@@ -666,6 +724,17 @@ bool ArgusSession::start(
       }
 
       const auto n = d->frames.fetch_add(1, std::memory_order_release) + 1;
+
+      // Dump before publishing: after it, the renderer owns the slot and the
+      // ISP may already be refilling it.
+      if(!d->dumpPrefix.isEmpty() && n <= d->dumpCount && slot < d->pub.size())
+      {
+        const auto& ps = d->pub[slot];
+        dumpFrame(
+            d->dumpPrefix, n, ps.host, ps.totalBytes, d->w, d->h, ps.offset,
+            ps.pitch, ps.planeCount);
+      }
+
       if(onFrame)
         onFrame(slot);
 
