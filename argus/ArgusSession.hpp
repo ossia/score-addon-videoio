@@ -52,8 +52,12 @@ struct ArgusSlot
   std::uint32_t pitch[3]{};
   std::uint32_t planeCount{1};
   std::uint32_t totalBytes{};
-  /// Host mapping, only when the CPU rung is in use (NvBufSurfaceMap).
+  /// Host mapping of plane 0, when mapped. Kept for callers that want a single
+  /// pointer, but see planeHost: the planes are mapped separately and are not
+  /// guaranteed contiguous, so this alone does not describe the frame.
   void* host{};
+  /// Per-plane host mappings, valid after mapHost().
+  void* planeHost[3]{};
 };
 
 class ArgusSession

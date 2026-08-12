@@ -114,12 +114,12 @@ EGLDisplay eglDisplayForArgus()
 /// there is no way to look at what the ISP actually produced -- and "the rung
 /// engaged" is not evidence that the pixels are right.
 void dumpFrame(
-    const QByteArray& prefix, std::uint64_t n, const void* host,
+    const QByteArray& prefix, std::uint64_t n, void* const* planeHost,
     std::uint32_t bytes, std::uint32_t w, std::uint32_t h,
     const std::uint32_t* offsets, const std::uint32_t* pitches,
     std::uint32_t planeCount)
 {
-  if(!host || bytes == 0)
+  if(!planeHost || !planeHost[0] || bytes == 0)
     return;
   const QString base
       = QString::fromUtf8(prefix) + QStringLiteral("-%1").arg(n, 3, 10, QChar('0'));
@@ -129,7 +129,15 @@ void dumpFrame(
     qWarning() << "Argus: cannot write" << f.fileName();
     return;
   }
-  f.write(static_cast<const char*>(host), qint64(bytes));
+  // Each plane from its own mapping, contiguously into the file, so the result
+  // is a plain NV12 image regardless of how the allocator spaced the planes.
+  for(std::uint32_t i = 0; i < planeCount && i < 3; ++i)
+  {
+    if(!planeHost[i])
+      break;
+    const std::uint32_t rows = (i == 0) ? h : (h + 1) / 2;
+    f.write(static_cast<const char*>(planeHost[i]), qint64(pitches[i]) * rows);
+  }
   f.close();
 
   QFile m(base + ".txt");
@@ -637,14 +645,22 @@ bool ArgusSession::mapHost()
     auto& s = d->pool[i];
     if(!s.surf)
       continue;
-    if(NvBufSurfaceMap(s.surf, 0, 0, NVBUF_MAP_READ) != 0)
+    // plane = -1 maps every plane. Passing 0 maps only luma, and then
+    // reading a whole frame from addr[0] runs off the end of that mapping --
+    // which looks exactly like corrupt chroma.
+    if(NvBufSurfaceMap(s.surf, 0, -1, NVBUF_MAP_READ) != 0)
     {
       qWarning() << "Argus: NvBufSurfaceMap failed for slot" << i;
       all = false;
       continue;
     }
     s.mapped = true;
-    d->pub[i].host = s.surf->surfaceList[0].mappedAddr.addr[0];
+    // Per plane: NvBufSurface maps each separately and they are not required to
+    // be contiguous, so one base pointer plus an offset is not enough.
+    const auto& sp = s.surf->surfaceList[0].planeParams;
+    for(std::uint32_t pl = 0; pl < sp.num_planes && pl < 3; ++pl)
+      d->pub[i].planeHost[pl] = s.surf->surfaceList[0].mappedAddr.addr[pl];
+    d->pub[i].host = d->pub[i].planeHost[0];
   }
   return all;
 }
@@ -731,8 +747,8 @@ bool ArgusSession::start(
       {
         const auto& ps = d->pub[slot];
         dumpFrame(
-            d->dumpPrefix, n, ps.host, ps.totalBytes, d->w, d->h, ps.offset,
-            ps.pitch, ps.planeCount);
+            d->dumpPrefix, n, ps.planeHost, ps.totalBytes, d->w, d->h,
+            ps.offset, ps.pitch, ps.planeCount);
       }
 
       if(onFrame)
