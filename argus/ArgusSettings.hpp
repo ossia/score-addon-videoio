@@ -111,11 +111,16 @@ struct ArgusSettings
   /// should surface as an error rather than a permanent block.
   std::uint64_t acquireTimeoutNs{5'000'000'000ull};
 
-  /// Depth of the buffer pool we hand libargus. Must cover the frames the
-  /// renderer may hold plus the ones the ISP is filling; the capture ladder's
-  /// borrowed-buffer contract needs FramesInFlight + 1 on top of the device's
-  /// own queue.
-  std::size_t bufferCount{6};
+  /// Depth of the buffer pool we hand libargus.
+  ///
+  /// This bounds THROUGHPUT, not just memory: the borrowed contract keeps a
+  /// slot from the ISP until the renderer has finished with it, so too shallow
+  /// a pool stalls the sensor. The ladder's correctness minimum is
+  /// FramesInFlight + 1 on top of the device's own queue, which 6 satisfies --
+  /// and 6 measured 21 fps against a 60 fps mode on a 3552x3556 frame, while
+  /// 10 reached the full 57 and 16 gained nothing further. Correctness minimum
+  /// and throughput requirement are not the same number.
+  std::size_t bufferCount{10};
 
   /// Log the resolved sensor mode and every clamped setting. On by default:
   /// a silently wrong mode pick reads as a permanent performance bug.
