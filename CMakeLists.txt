@@ -117,6 +117,42 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   message(STATUS "score-addon-videoio: V4L2 enabled")
 endif()
 
+# --- NVIDIA Argus (Tegra camera ISP) ----------------------------------------
+# Detection mirrors cds-camera-software/cmake/JetsonPlatform.cmake, which is
+# the working in-house recipe: the headers ship in the tegra-mmapi sysroot
+# component, not on the board. Note it pulls in EGL -- Argus can only be handed
+# application buffers as EGLImages (BUFFER_TYPE_EGL_IMAGE is the only buffer
+# type it defines), so EGL is needed even when QRhi is on Vulkan.
+set(JETSON_MMAPI_ROOT "${CMAKE_SYSROOT}/usr/src/jetson_multimedia_api"
+    CACHE PATH "Root of the Jetson Multimedia API tree")
+find_library(ARGUS_LIBRARY
+  NAMES nvargus_socketclient nvargus
+  PATHS "${CMAKE_SYSROOT}/usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}/nvidia"
+        "${CMAKE_SYSROOT}/usr/lib/aarch64-linux-gnu/nvidia"
+        "${CMAKE_SYSROOT}/usr/lib")
+if(ARGUS_LIBRARY AND EXISTS "${JETSON_MMAPI_ROOT}/argus/include/Argus/Argus.h")
+  list(APPEND VIDEOIO_HDRS
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusSettings.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusRuntime.hpp")
+  list(APPEND VIDEOIO_SRCS
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusRuntime.cpp")
+  list(APPEND VIDEOIO_DEFS SCORE_HAS_ARGUS=1)
+  list(APPEND VIDEOIO_INCS
+    "${JETSON_MMAPI_ROOT}/argus/include"
+    "${JETSON_MMAPI_ROOT}/include")
+  set(VIDEOIO_HAS_ARGUS TRUE)
+  message(STATUS "score-addon-videoio: NVIDIA Argus enabled (${ARGUS_LIBRARY})")
+else()
+  # Still compile the runtime shim so argusCompiledIn() exists everywhere and
+  # the difference between "no Tegra" and "daemon down" stays reportable.
+  list(APPEND VIDEOIO_HDRS
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusSettings.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusRuntime.hpp")
+  list(APPEND VIDEOIO_SRCS
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusRuntime.cpp")
+  message(STATUS "score-addon-videoio: NVIDIA Argus not found; stub only")
+endif()
+
 # --- Blackmagic DeckLink -----------------------------------------------------
 # Windows + clang64: the SDK ships only .idl (MS MIDL input); we generate the
 # COM C++ header + IID source with MinGW's widl at build time.
@@ -354,6 +390,17 @@ if(TARGET score_nv_dvp_bridge)
         "${SCORE_NV_DVP_DLL}"
         "$<TARGET_FILE_DIR:${PROJECT_NAME}>/dvp.dll"
       COMMENT "Copying dvp.dll alongside ${PROJECT_NAME}")
+  endif()
+endif()
+
+# --- Argus link --------------------------------------------------------------
+if(VIDEOIO_HAS_ARGUS)
+  target_link_libraries(${PROJECT_NAME} PRIVATE "${ARGUS_LIBRARY}")
+  # Argus hands out buffers only as EGLImages, so EGL is required on the Argus
+  # path regardless of which QRhi backend is in use.
+  find_library(ARGUS_EGL_LIBRARY NAMES EGL)
+  if(ARGUS_EGL_LIBRARY)
+    target_link_libraries(${PROJECT_NAME} PRIVATE "${ARGUS_EGL_LIBRARY}")
   endif()
 endif()
 
