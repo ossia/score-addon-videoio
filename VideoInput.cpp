@@ -1,5 +1,9 @@
 #include "VideoInput.hpp"
 
+#if defined(SCORE_HAS_V4L2)
+#include <linux/videodev2.h>
+#endif
+
 #include <Gfx/GfxApplicationPlugin.hpp>
 #include <Gfx/GfxParameter.hpp>
 
@@ -346,6 +350,33 @@ bool VideoInputDevice::reconnect()
         v4l2.device = set.deviceName.isEmpty()
                           ? ("/dev/video" + std::to_string(set.deviceIndex))
                           : set.deviceName.toStdString();
+
+        // Geometry and pixel format were being dropped here, so the node always
+        // took whatever the device happened to be configured for and the two
+        // settings fields did nothing on this vendor. A left-empty field still
+        // means "keep the driver's current setting" -- V4L2Session only writes
+        // the members that are non-zero.
+        //
+        // VideoFormat is a "<width>x<height>" string for V4L2 (the SDI vendors'
+        // mode names have no meaning for a webcam), and PixelFormat is a fourcc
+        // spelled out, e.g. "NV12".
+        if(const auto geom = set.videoFormat.split('x'); geom.size() == 2)
+        {
+          bool okW = false, okH = false;
+          const auto w = geom[0].trimmed().toUInt(&okW);
+          const auto h = geom[1].trimmed().toUInt(&okH);
+          if(okW && okH)
+          {
+            v4l2.width = w;
+            v4l2.height = h;
+          }
+        }
+        if(const auto pf = set.pixelFormat.trimmed().toLatin1(); pf.size() == 4)
+        {
+          v4l2.fourcc = v4l2_fourcc(
+              std::uint8_t(pf[0]), std::uint8_t(pf[1]), std::uint8_t(pf[2]),
+              std::uint8_t(pf[3]));
+        }
         registerGpuDirect(new Gfx::V4L2::V4L2CaptureNode{v4l2});
         qDebug() << "Direct Video Input: V4L2 host-staged node";
         return connected();
