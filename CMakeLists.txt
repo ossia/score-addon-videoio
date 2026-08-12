@@ -424,6 +424,19 @@ endif()
 # --- Argus link --------------------------------------------------------------
 if(VIDEOIO_HAS_ARGUS)
   target_link_libraries(${PROJECT_NAME} PRIVATE "${ARGUS_LIBRARY}")
+  # The buffer pool is NvBufSurface, which lives in its own library: libnvargus
+  # provides the camera API and none of NvBufSurfaceAllocate/Map/FromFd.
+  find_library(ARGUS_NVBUFSURFACE_LIBRARY
+    NAMES nvbufsurface
+    PATHS "${CMAKE_SYSROOT}/usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}/nvidia"
+          "${CMAKE_SYSROOT}/usr/lib/aarch64-linux-gnu/nvidia"
+          "${CMAKE_SYSROOT}/usr/lib")
+  if(ARGUS_NVBUFSURFACE_LIBRARY)
+    target_link_libraries(${PROJECT_NAME} PRIVATE "${ARGUS_NVBUFSURFACE_LIBRARY}")
+  else()
+    message(WARNING "score-addon-videoio: libnvbufsurface not found; the Argus "
+                    "buffer pool will not link")
+  endif()
   # Argus hands out buffers only as EGLImages, so EGL is required on the Argus
   # path regardless of which QRhi backend is in use.
   find_library(ARGUS_EGL_LIBRARY NAMES EGL)
