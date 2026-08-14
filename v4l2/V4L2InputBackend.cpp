@@ -154,7 +154,8 @@ V4L2InputBackend::pickStrategy(
   }
 
   auto strat = std::make_unique<score::gfx::interop::DmaBufImportCapture>(
-      "V4L2", std::move(descs));
+      "V4L2", std::move(descs),
+      score::gfx::interop::DmaBufOrigin::ForeignDevice);
   m_gpu = strat.get();
   return strat;
 }

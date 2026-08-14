@@ -123,7 +123,8 @@ ArgusInputBackend::makeDmaBufRung()
   }
 
   auto strat = std::make_unique<score::gfx::interop::DmaBufImportCapture>(
-      "Argus", std::move(descs));
+      "Argus", std::move(descs),
+      score::gfx::interop::DmaBufOrigin::GpuAllocated);
   if(m_wantExternal)
   {
     // DRM_FORMAT_NV12, spelled out to avoid a drm_fourcc.h dependency.
