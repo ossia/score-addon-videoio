@@ -350,11 +350,13 @@ bool VideoInputDevice::reconnect()
       {
 #if defined(SCORE_HAS_V4L2)
         Gfx::V4L2::V4L2InputSettings v4l2;
-        // deviceName carries the node path (/dev/videoN); the index is only a
-        // fallback for settings saved before a path was recorded.
-        v4l2.device = set.deviceName.isEmpty()
+        // devicePath is the node; deviceName is what the user called this
+        // device in score and has never been a path. Opening the latter meant
+        // open("vi-output, imx676 9-001a (/dev/video0)") -> ENOENT, and the
+        // capture silently never started.
+        v4l2.device = set.devicePath.isEmpty()
                           ? ("/dev/video" + std::to_string(set.deviceIndex))
-                          : set.deviceName.toStdString();
+                          : set.devicePath.toStdString();
 
         // Geometry and pixel format were being dropped here, so the node always
         // took whatever the device happened to be configured for and the two
@@ -688,7 +690,20 @@ Device::DeviceSettings VideoInputSettingsWidget::getSettings() const
   VideoInputSettings set;
   set.vendor = currentVendor();
   set.deviceName = s.name;
-  set.deviceIndex = std::max(0, m_deviceCombo->currentData().toInt());
+  // V4L2 identifies a device by node path, every other vendor by index, so the
+  // combo's data is a QString there and an int elsewhere. Reading it as an int
+  // turned "/dev/video2" into 0 and always opened the first node.
+  const auto devData = m_deviceCombo->currentData();
+  if(set.vendor == Vendor::V4L2)
+  {
+    set.devicePath = devData.toString();
+    set.deviceIndex = 0;
+  }
+  else
+  {
+    set.devicePath.clear();
+    set.deviceIndex = std::max(0, devData.toInt());
+  }
   set.channelIndex = m_channelCombo->currentData().toInt();
   set.videoFormat = m_formatCombo->currentText();
   set.pixelFormat = m_pixelFormatCombo->currentData().toString();
@@ -709,7 +724,9 @@ void VideoInputSettingsWidget::setSettings(const Device::DeviceSettings& s)
     m_vendorCombo->setCurrentIndex(vIdx);
   onVendorChanged();
 
-  int deviceIdx = m_deviceCombo->findData(set.deviceIndex);
+  const int deviceIdx = set.vendor == Vendor::V4L2
+                            ? m_deviceCombo->findData(set.devicePath)
+                            : m_deviceCombo->findData(set.deviceIndex);
   if(deviceIdx >= 0)
     m_deviceCombo->setCurrentIndex(deviceIdx);
   for(int i = 0; i < m_channelCombo->count(); ++i)

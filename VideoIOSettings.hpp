@@ -51,6 +51,11 @@ struct VideoInputSettings
 {
   Vendor vendor{Vendor::AJA};
   QString deviceName;
+  /// The device node this input opens, for vendors whose identity is a path
+  /// rather than an enumeration index -- V4L2, where one USB camera exposes
+  /// several /dev/videoN and only some of them capture. Empty for the SDI
+  /// vendors, which are addressed by `deviceIndex`.
+  QString devicePath;
   int deviceIndex{0};
   int channelIndex{0};
   QString videoFormat{"1080p5994"};
