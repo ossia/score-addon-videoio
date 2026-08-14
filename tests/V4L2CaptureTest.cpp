@@ -80,6 +80,8 @@ struct Args
   std::string api;    ///< empty = kernel cells only
   double seconds{4.}; ///< per renderer cell
   std::string dump;
+  /// Comma-separated device list to drive as one frame-locked rig.
+  std::string rig;
 };
 
 std::string fourccStr(std::uint32_t f)
@@ -624,6 +626,180 @@ RenderCell runRenderCell(
 }
 } // namespace
 
+
+/// Drive N devices as one rig and report whether they stay on the same capture.
+///
+/// The three ways this goes wrong all produce a plausible-looking run, so each
+/// is checked separately: members drifting onto different captures (the sync
+/// itself), one member delivering nothing while the other looks fine (which a
+/// combined frame count hides), and both members showing the same picture
+/// (which is what binding one device twice would look like).
+int runRig(const Args& a, score::gfx::GraphicsApi api)
+{
+  std::vector<std::string> devs;
+  for(std::size_t b = 0, e = 0; b <= a.rig.size(); b = e + 1)
+  {
+    e = a.rig.find(',', b);
+    if(e == std::string::npos)
+      e = a.rig.size();
+    if(e > b)
+      devs.push_back(a.rig.substr(b, e - b));
+    if(e == a.rig.size())
+      break;
+  }
+  if(devs.size() < 2)
+  {
+    std::printf("--rig needs at least two devices, comma separated\n");
+    return 2;
+  }
+
+  const std::size_t n = devs.size();
+  std::vector<Gfx::V4L2::V4L2CaptureNode*> in(n);
+  std::vector<score::gfx::BackgroundNode*> bg(n);
+  auto graph = std::make_unique<score::gfx::Graph>();
+
+  for(std::size_t i = 0; i < n; ++i)
+  {
+    QSize outSize{1280, 720};
+    V4L2InputSettings s;
+    s.device = devs[i];
+    s.width = std::uint32_t(a.width);
+    s.height = std::uint32_t(a.height);
+    s.fourcc = parseFourcc(a.fourcc);
+    s.syncRig = "v4l2-rig-test";
+    s.syncMember = i;
+    s.syncMembers = n;
+    {
+      Session probe;
+      if(probe.open(s.device))
+      {
+        if(a.width || a.height || !a.fourcc.empty())
+          probe.configure(s.width, s.height, s.fourcc);
+        const auto f = probe.format();
+        if(f.width > 0 && f.height > 0)
+          outSize = QSize(int(f.width), int(f.height));
+      }
+    }
+    in[i] = new Gfx::V4L2::V4L2CaptureNode(s);
+    bg[i] = new score::gfx::BackgroundNode();
+    bg[i]->shared_readback = std::make_shared<QRhiReadbackResult>();
+    bg[i]->setSize(outSize);
+    graph->addNode(in[i]);
+    graph->addNode(bg[i]);
+    graph->addEdge(
+        in[i]->output[0], bg[i]->input[0], Process::CableType::ImmediateGlutton);
+  }
+  graph->createAllRenderLists(api);
+
+  for(std::size_t i = 0; i < n; ++i)
+  {
+    if(!bg[i]->canRender())
+    {
+      std::printf("rig: member %zu (%s) failed render init\n", i, devs[i].c_str());
+      return 2;
+    }
+  }
+
+  std::vector<int> frames(n, 0), distinct(n, 0);
+  std::vector<char> uniform(n, 1);
+  std::vector<std::vector<std::uint8_t>> prev(n), last(n);
+  std::vector<std::uint64_t> gen(n, 0);
+  long long samples = 0, mismatched = 0;
+
+  const auto t0 = std::chrono::steady_clock::now();
+  constexpr double kWarmupSecs = 1.0;
+
+  QTimer render;
+  render.setTimerType(Qt::PreciseTimer);
+  QObject::connect(&render, &QTimer::timeout, [&] {
+    // Every member is rendered in the same tick: the group pins one capture per
+    // pass, and a member left un-rendered would pin a later one on its own.
+    for(std::size_t i = 0; i < n; ++i)
+      bg[i]->render();
+
+    if(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count()
+       < kWarmupSecs)
+      return;
+
+    for(std::size_t i = 0; i < n; ++i)
+    {
+      auto& rb = *bg[i]->shared_readback;
+      if(rb.data.isEmpty() || rb.pixelSize.isEmpty())
+        continue;
+      const int w = rb.pixelSize.width(), h = rb.pixelSize.height();
+      const auto* px = reinterpret_cast<const std::uint8_t*>(rb.data.constData());
+      frames[i]++;
+      const std::uint8_t first = px[1];
+      std::vector<std::uint8_t> grid;
+      for(int y = 0; y < h; y += std::max(1, h / 48))
+        for(int x = 0; x < w; x += std::max(1, w / 48))
+        {
+          const auto g = px[(std::size_t(y) * w + x) * 4 + 1];
+          if(g != first)
+            uniform[i] = 0;
+          grid.push_back(g);
+        }
+      if(!prev[i].empty() && grid != prev[i])
+        distinct[i]++;
+      prev[i] = grid;
+      last[i] = grid;
+      gen[i] = in[i]->capturedFrameCount();
+    }
+
+    // The generation is the group's, so every member reporting the same one is
+    // the frame-lock itself rather than a proxy for it.
+    bool all = true;
+    for(std::size_t i = 0; i < n; ++i)
+      if(gen[i] == 0)
+        all = false;
+    if(all)
+    {
+      ++samples;
+      for(std::size_t i = 1; i < n; ++i)
+        if(gen[i] != gen[0])
+        {
+          ++mismatched;
+          break;
+        }
+    }
+  });
+  render.start(8);
+
+  QEventLoop loop;
+  QTimer stopper;
+  stopper.setSingleShot(true);
+  QObject::connect(&stopper, &QTimer::timeout, &loop, [&] { loop.quit(); });
+  stopper.start(int(a.seconds * 1000));
+  loop.exec();
+  render.stop();
+
+  std::printf("\n== rig: %zu members ==\n", n);
+  std::printf(
+      "%-14s %8s %8s %9s %12s\n", "device", "frames", "distinct", "uniform",
+      "generation");
+  for(std::size_t i = 0; i < n; ++i)
+    std::printf(
+        "%-14s %8d %8d %9s %12llu\n", devs[i].c_str(), frames[i], distinct[i],
+        uniform[i] ? "YES" : "no", (unsigned long long)gen[i]);
+
+  bool identical = n >= 2 && !last[0].empty();
+  for(std::size_t i = 1; i < n && identical; ++i)
+    identical = (last[i] == last[0]);
+
+  bool everyMemberLive = true;
+  for(std::size_t i = 0; i < n; ++i)
+    if(frames[i] == 0 || uniform[i] || distinct[i] == 0)
+      everyMemberLive = false;
+
+  std::printf("\nsamples %lld, generation mismatches %lld\n", samples, mismatched);
+  std::printf("members show distinct pictures: %s\n", identical ? "NO" : "yes");
+
+  const bool pass
+      = everyMemberLive && samples > 0 && mismatched == 0 && !identical;
+  std::printf("rig verdict: %s\n", pass ? "PASS" : "FAIL");
+  return pass ? 0 : 1;
+}
+
 int main(int argc, char** argv)
 {
   Args a;
@@ -649,6 +825,8 @@ int main(int argc, char** argv)
       a.seconds = std::atof(next().c_str());
     else if(s == "--dump")
       a.dump = next();
+    else if(s == "--rig")
+      a.rig = next();
     else if(s == "--list")
       a.list = true;
     else if(s == "--size")
@@ -661,6 +839,27 @@ int main(int argc, char** argv)
         a.height = std::atoi(v.substr(x + 1).c_str());
       }
     }
+  }
+
+  // The rig cell drives its own device list and needs the renderer up, so it
+  // runs instead of the kernel sweep rather than after it.
+  if(!a.rig.empty())
+  {
+    auto rigApi = score::gfx::GraphicsApi::OpenGL;
+    if(a.api == "vulkan")
+      rigApi = score::gfx::GraphicsApi::Vulkan;
+    else if(!a.api.empty() && a.api != "opengl")
+    {
+      std::printf("unknown --api '%s'\n", a.api.c_str());
+      return 2;
+    }
+    qputenv("SCORE_DISABLE_AUDIOPLUGINS", "1");
+    qputenv("SCORE_SANITIZE_SKIP_CHECKS", "1");
+    qputenv("SCORE_AUDIO_BACKEND", "dummy");
+    if(qEnvironmentVariableIsEmpty("QT_XCB_GL_INTEGRATION"))
+      qputenv("QT_XCB_GL_INTEGRATION", "xcb_egl");
+    score::MinimalGUIApplication app(argc, argv);
+    return runRig(a, rigApi);
   }
 
   auto devices = enumerateDevices();
