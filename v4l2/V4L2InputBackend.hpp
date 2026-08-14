@@ -33,11 +33,13 @@
 #include <v4l2/V4L2Session.hpp>
 
 #include <Gfx/Graph/DMACaptureInputNode.hpp>
+#include <Gfx/Graph/interop/CaptureCorrelator.hpp>
 #include <Gfx/Graph/interop/VideoPixelFormat.hpp>
 
 #include <atomic>
 #include <functional>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -60,6 +62,15 @@ struct V4L2InputSettings
   std::uint32_t height{};
   std::uint32_t fourcc{};
   std::size_t slotCount{4};
+
+  /// Name of the rig this device belongs to, shared with the other devices it
+  /// must stay frame-locked to. Empty means the device stands alone and the
+  /// renderer binds whatever it published last, as it always did.
+  std::string syncRig;
+  /// This device's index within the rig, and how many devices the rig has.
+  /// Only the first device to be opened settles the size.
+  std::size_t syncMember{0};
+  std::size_t syncMembers{2};
 };
 
 class V4L2InputBackend final : public score::gfx::DMACaptureBackend
@@ -94,8 +105,12 @@ public:
   void setStrategy(score::gfx::interop::VideoCaptureStrategy* s) noexcept override;
   void start() override;
   void stop() override;
+  SyncMembership syncGroup() noexcept override;
 
 private:
+  /// Offer a just-ingested slot to the rig, and requeue whatever the rig hands
+  /// back. No-op for a device that is not in one. Capture thread only.
+  void offerToRig(int slot, std::uint64_t stampNs);
   void runLoopStaged();
   void runLoopDmaBuf();
   /// Hand back every slot the renderer has released. Capture thread only:
@@ -116,6 +131,9 @@ private:
   /// pickStrategy succeeds, and only *active* once the renderer settles on it.
   score::gfx::interop::DmaBufImportCapture* m_gpu{};
   bool m_gpuActive{};
+
+  /// Shared with the other devices of the same rig; null when standing alone.
+  std::shared_ptr<score::gfx::interop::CaptureCorrelator> m_rig;
 
   std::thread m_thread;
   std::atomic<bool> m_running{false};

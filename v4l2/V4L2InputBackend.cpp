@@ -1,6 +1,7 @@
 #include "V4L2InputBackend.hpp"
 
 #include <v4l2/V4L2CpuCapture.hpp>
+#include <v4l2/V4L2SyncRig.hpp>
 
 #include <Gfx/Graph/decoders/WireDecoderFactory.hpp>
 #include <Gfx/Graph/interop/BorrowedHostImportCapture.hpp>
@@ -100,6 +101,17 @@ bool V4L2InputBackend::open()
   m_height = int(fmt.height);
   m_fourcc = fmt.fourcc;
   m_frameByteSize = fmt.sizeImage;
+
+  m_rig = acquireSyncRig(m_settings.syncRig, m_settings.syncMembers);
+  if(m_rig && m_settings.syncMember >= m_rig->memberCount())
+  {
+    // A member index the rig cannot address would silently never publish, and
+    // the rig would hold forever waiting for a device that is already running.
+    qWarning() << "V4L2: sync member" << m_settings.syncMember << "is outside rig"
+               << m_settings.syncRig.c_str() << "of" << m_rig->memberCount()
+               << "-- capturing unsynchronised";
+    m_rig.reset();
+  }
 
   // Seed the live-format channel with the geometry we just negotiated. The
   // renderer baselines the channel at the end of its init(); without this the
@@ -307,8 +319,45 @@ void V4L2InputBackend::stop()
   m_running.store(false, std::memory_order_release);
   if(m_thread.joinable())
     m_thread.join();
+
+  // The capture thread is gone, so whatever this device left pending in the
+  // rig can never complete a row. Give it up before stopping the queue, or the
+  // partners wait on a member that no longer exists.
+  if(m_rig)
+  {
+    int held[score::gfx::interop::CaptureFrameSet::kMaxMembers];
+    m_rig->drain(held);
+    const auto mine = held[m_settings.syncMember];
+    if(mine >= 0 && m_gpuActive)
+      m_session.requeue(std::size_t(mine));
+  }
+
   m_session.stop();
   m_started = false;
+}
+
+score::gfx::DMACaptureBackend::SyncMembership
+V4L2InputBackend::syncGroup() noexcept
+{
+  if(!m_rig)
+    return {};
+  return {&m_rig->group(), m_settings.syncMember};
+}
+
+void V4L2InputBackend::offerToRig(int slot, std::uint64_t stampNs)
+{
+  if(!m_rig)
+    return;
+
+  const int displaced = m_rig->offer(m_settings.syncMember, slot, stampNs);
+  if(displaced < 0)
+    return;
+
+  // Only the zero-copy rungs hand out the driver's own buffers; the staged rung
+  // offers an index into the strategy's ring, which recycles on its own and
+  // must never be handed to VIDIOC_QBUF.
+  if(m_gpuActive || m_borrowed)
+    m_session.requeue(std::size_t(displaced));
 }
 
 void V4L2InputBackend::requeueReleasedSlots()
@@ -350,6 +399,7 @@ void V4L2InputBackend::runLoopDmaBuf()
       m_session.requeue(std::size_t(idx));
       continue;
     }
+    offerToRig(idx, m_session.slot(std::size_t(idx)).timestampNs);
     m_ring.latestSlot.store(std::size_t(idx), std::memory_order_release);
     m_ring.latestFrameId.fetch_add(1, std::memory_order_release);
   }
@@ -397,6 +447,7 @@ void V4L2InputBackend::runLoopStaged()
         m_session.requeue(std::size_t(idx));
         continue;
       }
+      offerToRig(idx, slot.timestampNs);
       m_ring.latestSlot.store(std::size_t(idx), std::memory_order_release);
       m_ring.latestFrameId.fetch_add(1, std::memory_order_release);
 
@@ -425,6 +476,7 @@ void V4L2InputBackend::runLoopStaged()
 
     if(!strat->ingestFrame(writeIdx))
       continue;
+    offerToRig(int(writeIdx), slot.timestampNs);
     m_ring.latestSlot.store(writeIdx, std::memory_order_release);
     m_ring.latestFrameId.fetch_add(1, std::memory_order_release);
     writeIdx = (writeIdx + 1) % slots;
