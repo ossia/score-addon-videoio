@@ -17,6 +17,8 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+
+#include <algorithm>
 #include <QDebug>
 #include <QFormLayout>
 #include <QLabel>
@@ -561,6 +563,28 @@ void VideoInputSettingsWidget::onVendorChanged()
     m_pixelFormatCombo->addItem("BGRA 8-bit", "BGRA");
     m_pixelFormatCombo->addItem("RGBA 8-bit", "RGBA");
   }
+#if defined(SCORE_HAS_V4L2)
+  else if(currentVendor() == Vendor::V4L2)
+  {
+    // The node's own fourccs. The consumer takes a literal four-character code,
+    // so the SDI tokens below ("YCbCr8" and friends) are the wrong length and
+    // were silently discarded, leaving whatever the driver was set to.
+    m_pixelFormatCombo->addItem(tr("Auto"), QString{});
+    const auto path = m_deviceCombo->currentData().toString().toStdString();
+    std::vector<QString> seen;
+    for(const auto& m : Gfx::V4L2::enumerateModes(path))
+    {
+      const char cc[5]
+          = {char(m.fourcc & 0xff), char((m.fourcc >> 8) & 0xff),
+             char((m.fourcc >> 16) & 0xff), char((m.fourcc >> 24) & 0xff), 0};
+      const auto tok = QString::fromLatin1(cc);
+      if(tok.size() != 4 || std::find(seen.begin(), seen.end(), tok) != seen.end())
+        continue;
+      seen.push_back(tok);
+      m_pixelFormatCombo->addItem(tok, tok);
+    }
+  }
+#endif
   else
   {
     m_pixelFormatCombo->addItem("YCbCr 8-bit", "YCbCr8");
@@ -654,6 +678,35 @@ void VideoInputSettingsWidget::updateFormatList()
   // Items carry the token as their text (getSettings reads currentText).
   const QString prev = m_formatCombo->currentText();
   m_formatCombo->clear();
+
+  // V4L2 is not an SDI card: its modes are whatever the node advertises, and
+  // the consumer parses "<width>x<height>". Offering the fixed SDI mode names
+  // here meant nothing ever parsed and the geometry silently stayed at
+  // whatever the driver was last left at -- which on the 12.6 MP sensors is
+  // full resolution, far past what the host-staged rung can carry.
+#if defined(SCORE_HAS_V4L2)
+  if(currentVendor() == Vendor::V4L2)
+  {
+    const auto path = m_deviceCombo->currentData().toString().toStdString();
+    std::vector<QString> seen;
+    for(const auto& m : Gfx::V4L2::enumerateModes(path))
+    {
+      if(m.width == 0 || m.height == 0)
+        continue;
+      const auto tok = QStringLiteral("%1x%2").arg(m.width).arg(m.height);
+      if(std::find(seen.begin(), seen.end(), tok) != seen.end())
+        continue;
+      seen.push_back(tok);
+      m_formatCombo->addItem(tok);
+    }
+    // "Auto" keeps the driver's current format, which is the right default for
+    // a webcam and the only option when the node advertises nothing.
+    m_formatCombo->insertItem(0, QStringLiteral("Auto"));
+    const int vidx = m_formatCombo->findText(prev.isEmpty() ? "Auto" : prev);
+    m_formatCombo->setCurrentIndex(vidx >= 0 ? vidx : 0);
+    return;
+  }
+#endif
 
   caps::FormatList master;
   for(const char* tok : {"720p5994",  "720p60",    "1080p2398", "1080p24",

@@ -241,4 +241,23 @@ struct DeviceInfo
 /// (metadata, output, radio) are skipped.
 SCORE_ADDON_VIDEOIO_EXPORT std::vector<DeviceInfo> enumerateDevices();
 
+/// One capture mode a node advertises: a pixel format and a frame size it can
+/// deliver it at.
+struct DeviceMode
+{
+  std::uint32_t fourcc{};
+  std::uint32_t width{};
+  std::uint32_t height{};
+};
+
+/// The modes @p path actually advertises, via ENUM_FMT + ENUM_FRAMESIZES.
+///
+/// The settings UI otherwise offers the SDI vendors' fixed mode names
+/// ("1080p5994" and friends), which mean nothing to a camera: the V4L2 path
+/// parses "<width>x<height>", so none of those tokens parse and the geometry
+/// silently stays whatever the driver was last left at. Stepped and continuous
+/// ranges are reported at their bounds rather than expanded.
+SCORE_ADDON_VIDEOIO_EXPORT std::vector<DeviceMode>
+enumerateModes(const std::string& path);
+
 } // namespace Gfx::V4L2

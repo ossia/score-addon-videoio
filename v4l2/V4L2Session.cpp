@@ -781,6 +781,49 @@ bool Session::requeue(std::size_t index)
   return d->queueSlot(index);
 }
 
+std::vector<DeviceMode> enumerateModes(const std::string& path)
+{
+  std::vector<DeviceMode> out;
+  const int fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC | O_NONBLOCK);
+  if(fd < 0)
+    return out;
+
+  for(std::uint32_t fi = 0;; ++fi)
+  {
+    v4l2_fmtdesc fd_{};
+    fd_.index = fi;
+    fd_.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if(xioctl(fd, VIDIOC_ENUM_FMT, &fd_) != 0)
+      break;
+
+    for(std::uint32_t si = 0;; ++si)
+    {
+      v4l2_frmsizeenum fs{};
+      fs.index = si;
+      fs.pixel_format = fd_.pixelformat;
+      if(xioctl(fd, VIDIOC_ENUM_FRAMESIZES, &fs) != 0)
+        break;
+
+      if(fs.type == V4L2_FRMSIZE_TYPE_DISCRETE)
+      {
+        out.push_back({fd_.pixelformat, fs.discrete.width, fs.discrete.height});
+      }
+      else
+      {
+        // Stepwise and continuous: report the bounds. Expanding the whole range
+        // would fill the list with thousands of entries nobody picks from.
+        out.push_back(
+            {fd_.pixelformat, fs.stepwise.min_width, fs.stepwise.min_height});
+        out.push_back(
+            {fd_.pixelformat, fs.stepwise.max_width, fs.stepwise.max_height});
+        break;
+      }
+    }
+  }
+  ::close(fd);
+  return out;
+}
+
 std::vector<DeviceInfo> enumerateDevices()
 {
   std::vector<DeviceInfo> out;
