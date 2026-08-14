@@ -3,6 +3,7 @@
 #include <v4l2/V4L2CpuCapture.hpp>
 #include <v4l2/V4L2SyncRig.hpp>
 
+#include <Gfx/Graph/decoders/BayerExternalOES.hpp>
 #include <Gfx/Graph/decoders/WireDecoderFactory.hpp>
 #include <Gfx/Graph/interop/BorrowedHostImportCapture.hpp>
 #include <Gfx/Graph/interop/DmaBufImportCapture.hpp>
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <optional>
 #include <vector>
 
 namespace Gfx::V4L2
@@ -142,7 +144,61 @@ Video::ImageFormat V4L2InputBackend::imageFormat() const
 std::unique_ptr<score::gfx::GPUVideoDecoder>
 V4L2InputBackend::makeDecoder(Video::VideoMetadata& meta)
 {
-  return score::gfx::makeWireDecoder(neutralFromV4L2Fourcc(m_fourcc, m_session.driver()), meta);
+  const auto neutral = neutralFromV4L2Fourcc(m_fourcc, m_session.driver());
+
+  // pickStrategies() has already run, so by now we know whether the rung took
+  // the whole-frame external image. The two must be chosen together: an
+  // external sampler is a different GLSL type and puts the sample in .r, so
+  // pairing it with the ordinary decoder samples a texture that was never
+  // uploaded, and pairing the ordinary rungs with the external decoder binds a
+  // target the staged texture does not have.
+  if(m_gpu && m_gpu->usesExternalImage())
+  {
+    using P = score::gfx::BayerDecoder::Phase;
+    const auto phase = [neutral]() -> std::optional<P> {
+      switch(neutral)
+      {
+        case score::gfx::interop::VideoPixelFormat::BayerRGGB8:
+        case score::gfx::interop::VideoPixelFormat::BayerRG8:
+        case score::gfx::interop::VideoPixelFormat::BayerRGGB10:
+        case score::gfx::interop::VideoPixelFormat::BayerRGGB16:
+        case score::gfx::interop::VideoPixelFormat::BayerRG12:
+          return P::RGGB;
+        case score::gfx::interop::VideoPixelFormat::BayerBGGR8:
+        case score::gfx::interop::VideoPixelFormat::BayerBGGR10:
+        case score::gfx::interop::VideoPixelFormat::BayerBGGR16:
+          return P::BGGR;
+        case score::gfx::interop::VideoPixelFormat::BayerGRBG8:
+        case score::gfx::interop::VideoPixelFormat::BayerGRBG10:
+          return P::GRBG;
+        case score::gfx::interop::VideoPixelFormat::BayerGBRG8:
+        case score::gfx::interop::VideoPixelFormat::BayerGBRG10:
+          return P::GBRG;
+        default:
+          return std::nullopt;
+      }
+    }();
+
+    if(phase)
+    {
+      // The ten- and twelve-bit orders ride right-aligned in a 16-bit lane and
+      // carry the same rescale the 2D decoder applies.
+      const double scale
+          = (neutral == score::gfx::interop::VideoPixelFormat::BayerRGGB10
+             || neutral == score::gfx::interop::VideoPixelFormat::BayerBGGR10
+             || neutral == score::gfx::interop::VideoPixelFormat::BayerGRBG10
+             || neutral == score::gfx::interop::VideoPixelFormat::BayerGBRG10)
+                ? 64.0625
+                : (neutral == score::gfx::interop::VideoPixelFormat::BayerRG12
+                       ? 16.0039
+                       : 1.0);
+      qDebug() << "V4L2: external-image Bayer demosaic engaged";
+      return std::make_unique<score::gfx::BayerExternalOESDecoder>(
+          meta, *phase, scale);
+    }
+  }
+
+  return score::gfx::makeWireDecoder(neutral, meta);
 }
 
 std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
@@ -194,6 +250,24 @@ V4L2InputBackend::pickStrategy(
   auto strat = std::make_unique<score::gfx::interop::DmaBufImportCapture>(
       "V4L2", std::move(descs),
       score::gfx::interop::DmaBufOrigin::ForeignDevice);
+
+  // Ask for the whole frame as one external image. Measured on the Orin NX:
+  // eglCreateImage accepts R16/R8/ABGR8888 from a V4L2 export, but binding any
+  // of them to GL_TEXTURE_2D fails and only GL_TEXTURE_EXTERNAL_OES succeeds --
+  // which is exactly what the per-plane 2D branch reports as "driver cannot
+  // sample fourcc ... as a 2D texture" before declining the whole rung. Without
+  // this the zero-copy path is unreachable on Tegra and capture falls back to
+  // staging 25 MB per frame out of uncached pages.
+  //
+  // Single-plane only: the external form is one image for the frame, and a
+  // planar layout has no single fourcc to name it by.
+  const auto neutral = neutralFromV4L2Fourcc(fmt.fourcc, m_session.driver());
+  if(const auto drm = score::gfx::interop::toDrmFourcc(neutral); drm != 0)
+  {
+    m_wantExternal = true;
+    strat->requestExternalImage(drm, int(fmt.height));
+  }
+
   m_gpu = strat.get();
   return strat;
 }

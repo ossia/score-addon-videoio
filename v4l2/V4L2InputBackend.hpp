@@ -131,6 +131,10 @@ private:
   /// pickStrategy succeeds, and only *active* once the renderer settles on it.
   score::gfx::interop::DmaBufImportCapture* m_gpu{};
   bool m_gpuActive{};
+  /// Set when the dma-buf rung was asked for the whole-frame external image.
+  /// makeDecoder() has to agree: an external sampler is a different GLSL type
+  /// and returns the sample already in .r, so the two are chosen together.
+  bool m_wantExternal{};
 
   /// Shared with the other devices of the same rig; null when standing alone.
   std::shared_ptr<score::gfx::interop::CaptureCorrelator> m_rig;
