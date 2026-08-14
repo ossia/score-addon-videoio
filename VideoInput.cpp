@@ -932,7 +932,13 @@ public:
       s.protocol = VideoInputProtocolFactory::static_concreteKey();
       VideoInputSettings set;
       set.vendor = Vendor::V4L2;
-      set.deviceName = QString::fromStdString(dev.path);
+      // The node goes in devicePath. Putting it in deviceName was the old
+      // convention and it does not survive the settings widget, which
+      // overwrites deviceName with whatever the device is called in score --
+      // after which every enumerated camera fell back to /dev/video0 and the
+      // second one collided with the first.
+      set.devicePath = QString::fromStdString(dev.path);
+      set.deviceName = s.name;
       s.deviceSpecificSettings = QVariant::fromValue(set);
       func(s.name, s);
     }
