@@ -130,7 +130,11 @@ private:
 /// Neutral pixel format for a V4L2 fourcc, for the decoder and the settings UI.
 /// Unknown for anything the shared unpackers cannot decode (compressed
 /// formats especially: MJPG/H264 need a decode stage this path does not have).
-score::gfx::interop::VideoPixelFormat
-neutralFromV4L2Fourcc(std::uint32_t fourcc) noexcept;
+///
+/// `driver` is VIDIOC_QUERYCAP's driver name, used to apply the sample-packing
+/// quirks of drivers that deviate from what the fourcc specifies. Passing
+/// nothing selects the specified behaviour.
+score::gfx::interop::VideoPixelFormat neutralFromV4L2Fourcc(
+    std::uint32_t fourcc, std::string_view driver = {}) noexcept;
 
 } // namespace Gfx::V4L2

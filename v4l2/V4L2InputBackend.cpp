@@ -24,9 +24,35 @@ using score::gfx::interop::VideoPixelFormat;
 // The fourcc table lives in score-plugin-gfx so the camera enumeration and this
 // capture path cannot drift apart; compressed fourccs deliberately resolve to
 // Unknown here because this path has no decode stage.
-VideoPixelFormat neutralFromV4L2Fourcc(std::uint32_t f) noexcept
+VideoPixelFormat
+neutralFromV4L2Fourcc(std::uint32_t f, std::string_view driver) noexcept
 {
-  return score::gfx::interop::fromV4L2PixelFormat(f);
+  const auto n = score::gfx::interop::fromV4L2PixelFormat(f);
+
+  // V4L2 puts the ten significant bits of SRGGB10 & co. in the low bits of a
+  // 16-bit word and zeroes the rest. Tegra's VI instead replicates the high
+  // bits down into the low six, so a sample spans the whole 16-bit range and
+  // 1023 reads as 65535 rather than 1023. Measured on both IMX676 nodes of the
+  // Orin NX rig: (s & 63) == (s >> 10) holds for every sample of a frame.
+  //
+  // That is precisely what the 16-bit orders already describe, so they name
+  // these bytes exactly, and the right-aligned 10-bit ones would come out 64x
+  // too bright -- a uniformly white frame. Only the two orders with a 16-bit
+  // row in the vocabulary can be remapped; no GRBG/GBRG sensor exists on this
+  // hardware.
+  if(driver == "tegra-video")
+  {
+    switch(n)
+    {
+      case VideoPixelFormat::BayerRGGB10:
+        return VideoPixelFormat::BayerRGGB16;
+      case VideoPixelFormat::BayerBGGR10:
+        return VideoPixelFormat::BayerBGGR16;
+      default:
+        break;
+    }
+  }
+  return n;
 }
 
 V4L2InputBackend::V4L2InputBackend(
@@ -61,7 +87,7 @@ bool V4L2InputBackend::open()
   }
 
   const auto& fmt = m_session.format();
-  if(neutralFromV4L2Fourcc(fmt.fourcc) == VideoPixelFormat::Unknown)
+  if(neutralFromV4L2Fourcc(fmt.fourcc, m_session.driver()) == VideoPixelFormat::Unknown)
   {
     // Refusing here is better than opening and rendering garbage: a webcam
     // whose only 4K mode is MJPG has to be reported, not silently accepted.
@@ -82,7 +108,7 @@ bool V4L2InputBackend::open()
   // renderer once per start.
   m_ring.publishFormat(
       m_width, m_height,
-      int(score::gfx::interop::toAVPixelFormat(neutralFromV4L2Fourcc(m_fourcc))),
+      int(score::gfx::interop::toAVPixelFormat(neutralFromV4L2Fourcc(m_fourcc, m_session.driver()))),
       0.0);
   return true;
 }
@@ -93,7 +119,7 @@ Video::ImageFormat V4L2InputBackend::imageFormat() const
   f.width = m_width;
   f.height = m_height;
   f.pixel_format
-      = score::gfx::interop::toAVPixelFormat(neutralFromV4L2Fourcc(m_fourcc));
+      = score::gfx::interop::toAVPixelFormat(neutralFromV4L2Fourcc(m_fourcc, m_session.driver()));
   f.color_space = AVCOL_SPC_BT709;
   f.color_primaries = AVCOL_PRI_BT709;
   f.color_trc = AVCOL_TRC_BT709;
@@ -104,7 +130,7 @@ Video::ImageFormat V4L2InputBackend::imageFormat() const
 std::unique_ptr<score::gfx::GPUVideoDecoder>
 V4L2InputBackend::makeDecoder(Video::VideoMetadata& meta)
 {
-  return score::gfx::makeWireDecoder(neutralFromV4L2Fourcc(m_fourcc), meta);
+  return score::gfx::makeWireDecoder(neutralFromV4L2Fourcc(m_fourcc, m_session.driver()), meta);
 }
 
 std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
@@ -313,7 +339,7 @@ void V4L2InputBackend::runLoopDmaBuf()
     m_ring.publishFormat(
         int(fmt.width), int(fmt.height),
         int(score::gfx::interop::toAVPixelFormat(
-            neutralFromV4L2Fourcc(fmt.fourcc))),
+            neutralFromV4L2Fourcc(fmt.fourcc, m_session.driver()))),
         0.0);
 
     // From here the slot belongs to the renderer: it samples the buffer in
@@ -357,7 +383,7 @@ void V4L2InputBackend::runLoopStaged()
     m_ring.publishFormat(
         int(fmt.width), int(fmt.height),
         int(score::gfx::interop::toAVPixelFormat(
-            neutralFromV4L2Fourcc(fmt.fourcc))),
+            neutralFromV4L2Fourcc(fmt.fourcc, m_session.driver()))),
         0.0);
 
     if(m_borrowed)
