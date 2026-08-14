@@ -4,6 +4,7 @@
 #include <v4l2/V4L2SyncRig.hpp>
 
 #include <Gfx/Graph/decoders/BayerExternalOES.hpp>
+#include <Gfx/Graph/decoders/NV12ExternalOES.hpp>
 #include <Gfx/Graph/decoders/WireDecoderFactory.hpp>
 #include <Gfx/Graph/interop/BorrowedHostImportCapture.hpp>
 #include <Gfx/Graph/interop/DmaBufImportCapture.hpp>
@@ -326,12 +327,25 @@ V4L2InputBackend::pickStrategies(
   //
   // GL only: the external image is an EGL/GLES construct. A planar layout has
   // no single fourcc to name the whole frame by.
+  //
+  // It must also be a decision the dma-buf rung can honour, because the
+  // external decoder cannot consume a staged upload: if the ladder falls back
+  // to CPU with this set, that rung renders black. So the same preconditions
+  // pickStrategy() checks before it will build the rung at all are checked
+  // here, and anything less certain leaves the ordinary decoder in place --
+  // an unnecessary copy is recoverable, a silently black fallback is not.
   m_wantExternal = false;
   if(impl == QRhi::OpenGLES2 && m_session.format().planeCount == 1)
   {
+    const auto caps = m_session.bufferCaps();
     const auto neutral = neutralFromV4L2Fourcc(m_fourcc, m_session.driver());
-    m_wantExternal = score::gfx::interop::toDrmFourcc(neutral) != 0;
+    m_wantExternal = caps.probed && caps.mmap
+                     && score::gfx::interop::toDrmFourcc(neutral) != 0
+                     && score::gfx::nv12ExternalOesUsable(impl);
   }
+  if(!m_wantExternal)
+    qDebug() << "V4L2: no whole-frame external image; the ordinary decoder and "
+                "the staged rungs stay in play";
 
   std::vector<std::function<std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>()>>
       v;
