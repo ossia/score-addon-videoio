@@ -152,7 +152,7 @@ V4L2InputBackend::makeDecoder(Video::VideoMetadata& meta)
   // pairing it with the ordinary decoder samples a texture that was never
   // uploaded, and pairing the ordinary rungs with the external decoder binds a
   // target the staged texture does not have.
-  if(m_gpu && m_gpu->usesExternalImage())
+  if(m_wantExternal)
   {
     using P = score::gfx::BayerDecoder::Phase;
     const auto phase = [neutral]() -> std::optional<P> {
@@ -261,11 +261,11 @@ V4L2InputBackend::pickStrategy(
   //
   // Single-plane only: the external form is one image for the frame, and a
   // planar layout has no single fourcc to name it by.
-  const auto neutral = neutralFromV4L2Fourcc(fmt.fourcc, m_session.driver());
-  if(const auto drm = score::gfx::interop::toDrmFourcc(neutral); drm != 0)
+  if(m_wantExternal)
   {
-    m_wantExternal = true;
-    strat->requestExternalImage(drm, int(fmt.height));
+    const auto neutral = neutralFromV4L2Fourcc(fmt.fourcc, m_session.driver());
+    if(const auto drm = score::gfx::interop::toDrmFourcc(neutral); drm != 0)
+      strat->requestExternalImage(drm, int(fmt.height));
   }
 
   m_gpu = strat.get();
@@ -317,6 +317,22 @@ V4L2InputBackend::pickStrategies(
   // Best first. The dma-buf rung is preferred where the driver exports (it is
   // the only one that also works on GL), but NVIDIA accepts the fd and then
   // refuses the import, so the host-import rung has to be reachable after it.
+  // The external-image intent has to be settled HERE, not inside the thunk.
+  // DMACaptureInputNode::init calls this to build the ladder, then makeDecoder,
+  // and only then runs the thunks -- so anything pickStrategy() decides is
+  // still unknown when the decoder is chosen, and the decoder has to be the
+  // one that matches. Deciding it eagerly is what the Argus backend does for
+  // the same reason.
+  //
+  // GL only: the external image is an EGL/GLES construct. A planar layout has
+  // no single fourcc to name the whole frame by.
+  m_wantExternal = false;
+  if(impl == QRhi::OpenGLES2 && m_session.format().planeCount == 1)
+  {
+    const auto neutral = neutralFromV4L2Fourcc(m_fourcc, m_session.driver());
+    m_wantExternal = score::gfx::interop::toDrmFourcc(neutral) != 0;
+  }
+
   std::vector<std::function<std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>()>>
       v;
   v.emplace_back([this, impl, &caps] { return pickStrategy(impl, caps); });
