@@ -90,15 +90,55 @@ bool V4L2InputBackend::open()
     }
   }
 
-  const auto& fmt = m_session.format();
-  if(neutralFromV4L2Fourcc(fmt.fourcc, m_session.driver()) == VideoPixelFormat::Unknown)
+  if(neutralFromV4L2Fourcc(m_session.format().fourcc, m_session.driver())
+     == VideoPixelFormat::Unknown)
   {
-    // Refusing here is better than opening and rendering garbage: a webcam
-    // whose only 4K mode is MJPG has to be reported, not silently accepted.
-    qWarning() << "V4L2: pixel format not decodable by the wire unpackers"
-               << m_settings.device.c_str();
-    return false;
+    // S_FMT state outlives the process that set it, so a device left in MJPG
+    // stays there and every later open inherits it -- one bad choice would
+    // black the camera out permanently, long after the setting that caused it
+    // was changed back. Renegotiate to something this path can actually
+    // unpack, unless the undecodable format is what was explicitly asked for.
+    const bool asked = m_settings.fourcc != 0;
+    bool recovered = false;
+
+    if(!asked)
+    {
+      for(const auto& m : enumerateModes(m_settings.device))
+      {
+        if(neutralFromV4L2Fourcc(m.fourcc, m_session.driver())
+           == VideoPixelFormat::Unknown)
+          continue;
+        // Keep the geometry that was asked for, if any; only the layout is
+        // being corrected.
+        const auto w = m_settings.width ? m_settings.width : m.width;
+        const auto h = m_settings.height ? m_settings.height : m.height;
+        if(m_session.configure(w, h, m.fourcc)
+           && neutralFromV4L2Fourcc(m_session.format().fourcc, m_session.driver())
+                  != VideoPixelFormat::Unknown)
+        {
+          qWarning() << "V4L2:" << m_settings.device.c_str()
+                     << "was left in a format this path cannot unpack;"
+                        " renegotiated to"
+                     << QByteArray(reinterpret_cast<const char*>(&m.fourcc), 4);
+          recovered = true;
+          break;
+        }
+      }
+    }
+
+    if(!recovered)
+    {
+      // Refusing here is better than opening and rendering garbage: a webcam
+      // whose only 4K mode is MJPG has to be reported, not silently accepted.
+      qWarning() << "V4L2: pixel format not decodable by the wire unpackers"
+                 << m_settings.device.c_str()
+                 << "-- this path has no decode stage, so pick an uncompressed"
+                    " format (or use the Camera Input device, which decodes)";
+      return false;
+    }
   }
+
+  const auto& fmt = m_session.format();
 
   m_width = int(fmt.width);
   m_height = int(fmt.height);
