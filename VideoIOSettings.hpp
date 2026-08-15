@@ -56,6 +56,12 @@ struct VideoInputSettings
   /// several /dev/videoN and only some of them capture. Empty for the SDI
   /// vendors, which are addressed by `deviceIndex`.
   QString devicePath;
+  /// Extra device nodes making up a frame-locked rig, comma separated, with
+  /// `devicePath` as member 0. Empty is the ordinary single-stream device.
+  /// When set, the device exposes one child per member (`rig:/cam0`,
+  /// `rig:/cam1`, ...) and they share one capture correlator -- the only way
+  /// their renderers can be handed frames from the same capture.
+  QString rigPaths;
   int deviceIndex{0};
   int channelIndex{0};
   QString videoFormat{"1080p5994"};

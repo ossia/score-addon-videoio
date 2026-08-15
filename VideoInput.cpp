@@ -386,6 +386,43 @@ bool VideoInputDevice::reconnect()
               std::uint8_t(pf[0]), std::uint8_t(pf[1]), std::uint8_t(pf[2]),
               std::uint8_t(pf[3]));
         }
+        if(!set.rigPaths.trimmed().isEmpty())
+        {
+          // A rig: one device, one child per sensor, all sharing a correlator
+          // so their renderers are handed frames from the same capture. The
+          // rig is named after the device, so two rigs in one document stay
+          // separate; the member index is the child's position, which is why
+          // it is not a user-facing setting.
+          QStringList paths{QString::fromStdString(v4l2.device)};
+          for(const auto& extra : set.rigPaths.split(',', Qt::SkipEmptyParts))
+            if(const auto t = extra.trimmed(); !t.isEmpty())
+              paths.push_back(t);
+
+          auto dev = std::make_unique<Gfx::multi_texture_input_device>(
+              std::make_unique<Gfx::simple_texture_input_protocol>(),
+              settings().name.toStdString());
+
+          for(int i = 0; i < paths.size(); ++i)
+          {
+            auto member = v4l2;
+            member.device = paths[i].trimmed().toStdString();
+            member.syncRig = settings().name.toStdString();
+            member.syncMember = std::size_t(i);
+            member.syncMembers = std::size_t(paths.size());
+
+            dev->add_stream(
+                new Gfx::V4L2::V4L2CaptureNode{member}, &plug->exec,
+                QString("cam%1").arg(i).toStdString());
+          }
+
+          m_dev = std::move(dev);
+          m_protocol = nullptr;
+          deviceChanged(nullptr, m_dev.get());
+          qDebug() << "Direct Video Input: V4L2 rig of" << paths.size()
+                   << "sensors:" << paths;
+          return connected();
+        }
+
         registerGpuDirect(new Gfx::V4L2::V4L2CaptureNode{v4l2});
         qDebug() << "Direct Video Input: V4L2 host-staged node";
         return connected();
@@ -484,6 +521,12 @@ VideoInputSettingsWidget::VideoInputSettingsWidget(QWidget* parent)
 
   m_deviceCombo = new QComboBox{this};
   m_layout->addRow(tr("Device"), m_deviceCombo);
+
+  m_rigPathsEdit = new QLineEdit{this};
+  m_rigPathsEdit->setPlaceholderText(
+      QObject::tr("e.g. /dev/video1 -- leave empty for a single camera"));
+  m_layout->addRow(tr("Rig: other cameras"), m_rigPathsEdit);
+  this->checkForChanges(m_rigPathsEdit);
 
   m_channelCombo = new QComboBox{this};
   for(int i = 1; i <= 8; ++i)
@@ -758,6 +801,7 @@ Device::DeviceSettings VideoInputSettingsWidget::getSettings() const
     set.deviceIndex = std::max(0, devData.toInt());
   }
   set.channelIndex = m_channelCombo->currentData().toInt();
+  set.rigPaths = m_rigPathsEdit->text();
   set.videoFormat = m_formatCombo->currentText();
   set.pixelFormat = m_pixelFormatCombo->currentData().toString();
   set.resolutionMode = m_resolutionModeCombo->currentData().toInt();
@@ -785,6 +829,7 @@ void VideoInputSettingsWidget::setSettings(const Device::DeviceSettings& s)
   for(int i = 0; i < m_channelCombo->count(); ++i)
     if(m_channelCombo->itemData(i).toInt() == set.channelIndex)
       m_channelCombo->setCurrentIndex(i);
+  m_rigPathsEdit->setText(set.rigPaths);
   m_formatCombo->setCurrentText(set.videoFormat);
   int pfIdx = m_pixelFormatCombo->findData(set.pixelFormat);
   if(pfIdx >= 0)

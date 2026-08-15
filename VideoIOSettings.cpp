@@ -64,7 +64,7 @@ template <>
 void DataStreamReader::read(const Gfx::VideoIO::VideoInputSettings& n)
 {
   m_stream << static_cast<int>(n.vendor) << n.deviceName << n.devicePath
-           << n.deviceIndex << n.channelIndex << n.videoFormat << n.pixelFormat
+           << n.rigPaths << n.deviceIndex << n.channelIndex << n.videoFormat << n.pixelFormat
            << n.resolutionMode << n.routingMode << n.useRDMA;
   insertDelimiter();
 }
@@ -73,7 +73,8 @@ template <>
 void DataStreamWriter::write(Gfx::VideoIO::VideoInputSettings& n)
 {
   int vendor = 0;
-  m_stream >> vendor >> n.deviceName >> n.devicePath >> n.deviceIndex
+  m_stream >> vendor >> n.deviceName >> n.devicePath >> n.rigPaths
+      >> n.deviceIndex
       >> n.channelIndex >> n.videoFormat >> n.pixelFormat >> n.resolutionMode
       >> n.routingMode >> n.useRDMA;
   n.vendor = static_cast<Gfx::VideoIO::Vendor>(vendor);
@@ -86,6 +87,7 @@ void JSONReader::read(const Gfx::VideoIO::VideoInputSettings& n)
   obj["Vendor"] = static_cast<int>(n.vendor);
   obj["DeviceName"] = n.deviceName;
   obj["DevicePath"] = n.devicePath;
+  obj["RigPaths"] = n.rigPaths;
   obj["DeviceIndex"] = n.deviceIndex;
   obj["ChannelIndex"] = n.channelIndex;
   obj["VideoFormat"] = n.videoFormat;
@@ -101,6 +103,7 @@ void JSONWriter::write(Gfx::VideoIO::VideoInputSettings& n)
   n.vendor = static_cast<Gfx::VideoIO::Vendor>(obj["Vendor"].toInt());
   n.deviceName = obj["DeviceName"].toString();
   n.devicePath = obj["DevicePath"].toString();
+  n.rigPaths = obj["RigPaths"].toString();
   n.deviceIndex = obj["DeviceIndex"].toInt();
   n.channelIndex = obj["ChannelIndex"].toInt();
   n.videoFormat = obj["VideoFormat"].toString();

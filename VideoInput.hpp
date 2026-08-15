@@ -97,6 +97,7 @@ private:
 
   QFormLayout* m_layout{};
   QLineEdit* m_deviceNameEdit{};
+  QLineEdit* m_rigPathsEdit{};
   QComboBox* m_vendorCombo{};
   QComboBox* m_deviceCombo{};
   QComboBox* m_channelCombo{};
