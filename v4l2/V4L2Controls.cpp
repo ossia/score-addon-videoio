@@ -1,5 +1,7 @@
 #include "V4L2Controls.hpp"
 
+#include <Gfx/Graph/interop/V4L2Loader.hpp>
+
 #include <fcntl.h>
 #include <linux/videodev2.h>
 #include <sys/ioctl.h>
@@ -15,14 +17,33 @@ namespace Gfx::V4L2
 {
 namespace
 {
+/// Routed through the shared libv4l2 loader when it is present. Controls need
+/// none of that library's format emulation, so a machine without it falls back
+/// to the raw syscall rather than losing the tree entirely.
 int xioctl(int fd, unsigned long req, void* arg) noexcept
 {
+  const auto& lib = score::gfx::v4l2::Libv4l2::instance();
   int r;
   do
   {
-    r = ::ioctl(fd, req, arg);
+    r = lib.available() ? lib.ioctl(fd, req, arg) : ::ioctl(fd, req, arg);
   } while(r == -1 && errno == EINTR);
   return r;
+}
+
+int xopen(const char* path, int flags) noexcept
+{
+  const auto& lib = score::gfx::v4l2::Libv4l2::instance();
+  return lib.available() ? lib.open(path, flags) : ::open(path, flags);
+}
+
+void xclose(int fd) noexcept
+{
+  const auto& lib = score::gfx::v4l2::Libv4l2::instance();
+  if(lib.available())
+    lib.close(fd);
+  else
+    ::close(fd);
 }
 
 std::optional<ControlKind> kindOf(std::uint32_t type) noexcept
@@ -121,7 +142,7 @@ ControlSet& ControlSet::operator=(ControlSet&& other) noexcept
 bool ControlSet::open(const std::string& path)
 {
   close();
-  m_fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC | O_NONBLOCK);
+  m_fd = xopen(path.c_str(), O_RDWR | O_CLOEXEC | O_NONBLOCK);
   if(m_fd < 0)
     return false;
   enumerate();
@@ -132,7 +153,7 @@ void ControlSet::close()
 {
   if(m_fd >= 0)
   {
-    ::close(m_fd);
+    xclose(m_fd);
     m_fd = -1;
   }
   m_controls.clear();
