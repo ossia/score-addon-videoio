@@ -233,7 +233,21 @@ ControlTree::ControlTree(
   }
 }
 
-ControlTree::~ControlTree() = default;
+ControlTree::~ControlTree()
+{
+  // Sever the parameters' callbacks first. They capture `this`, and the device
+  // that owns them outlives this object by design -- the tree is torn down
+  // before the device precisely so its socket notifier cannot push into freed
+  // nodes. That leaves the mirror hazard: a write arriving from OSC or the
+  // execution engine in the window between the two would call a lambda whose
+  // captured tree is gone.
+  for(auto& [id, param] : m_params)
+    if(param)
+      param->callbacks_clear();
+
+  // And stop the notifier before the fd it watches closes.
+  m_notifier.reset();
+}
 
 ossia::net::parameter_base* ControlTree::paramFor(std::uint32_t id) const noexcept
 {
