@@ -23,6 +23,7 @@
 
 #include <argus/ArgusSession.hpp>
 #include <argus/ArgusSettings.hpp>
+#include <argus/ArgusSyncRig.hpp>
 
 #include <Gfx/Graph/DMACaptureInputNode.hpp>
 
@@ -37,7 +38,9 @@ struct BorrowedHostImportCapture;
 namespace Gfx::Argus
 {
 
-class ArgusInputBackend final : public score::gfx::DMACaptureBackend
+class ArgusInputBackend final
+    : public score::gfx::DMACaptureBackend
+    , public ArgusRigMember
 {
 public:
   ArgusInputBackend(
@@ -68,16 +71,43 @@ public:
   void start() override;
   void stop() override;
 
+  SyncMembership syncGroup() noexcept override;
+  void setSyncGroupEngaged(bool b) noexcept override { m_syncEngaged = b; }
+
   /// The mode the session settled on, for harnesses and the settings UI.
   std::int32_t resolvedSensorMode() const noexcept;
+
+  // ArgusRigMember: what the rig's capture thread needs from us.
+  bool grouped() const noexcept override { return m_syncEngaged; }
+  void publishUngrouped(std::size_t slot) override;
+  std::uint32_t takeReturnedUngrouped() override;
 
 private:
   std::unique_ptr<score::gfx::interop::VideoCaptureStrategy> makeDmaBufRung();
   std::unique_ptr<score::gfx::interop::VideoCaptureStrategy> makeBorrowedRung();
 
+  /// This backend's slots: its sensor's stream of a shared session, or the only
+  /// stream of its own.
+  const std::vector<ArgusSlot>& mySlots() const noexcept;
+
   ArgusSettings m_settings;
   score::gfx::interop::VideoCaptureSlotRing& m_ring;
-  ArgusSession m_session;
+
+  /// Used when this camera stands alone. A rig member's session belongs to the
+  /// rig, because a session is the sync domain and cannot be split across the
+  /// nodes that share it.
+  ArgusSession m_ownSession;
+  /// Whichever of the two is in force; null before open().
+  ArgusSession* m_session{};
+
+  /// Shared with the other sensors of the same rig; null when standing alone.
+  std::shared_ptr<ArgusRig> m_rig;
+  /// Our stream within m_session. Zero for a lone camera and for a rig that
+  /// fell back to one session per sensor.
+  std::size_t m_stream{0};
+  /// Whether the renderer takes our slots from the group. Settled during its
+  /// init(), before start() lets any capture thread read it.
+  bool m_syncEngaged{false};
 
   score::gfx::interop::VideoCaptureStrategy* m_strategy{};
 

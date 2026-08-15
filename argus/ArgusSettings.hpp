@@ -86,6 +86,17 @@ struct ArgusSettings
   /// can reconstruct a synchronisation the capture never had.
   std::vector<std::uint32_t> sensorIds{};
 
+  /// Name of the rig these sensors make up, empty for a lone camera. Members
+  /// find each other by it rather than by pointer: they are built independently
+  /// from separate graph nodes, in whatever order the document instantiates
+  /// them.
+  std::string syncRig{};
+
+  /// This backend's position in `sensorIds`, which is also its member index in
+  /// the sync group and the stream index within a shared session. Not a
+  /// user-facing setting -- it is the child's position in the device tree.
+  std::size_t syncMember{0};
+
   /// -1 selects the smallest mode that satisfies the requested geometry and
   /// rate, matching the plugin's own algorithm. Anything else is used verbatim.
   std::int32_t sensorMode{-1};

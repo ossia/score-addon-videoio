@@ -12,6 +12,8 @@
 
 #include <QDebug>
 
+#include <algorithm>
+
 extern "C" {
 #include <libavutil/pixfmt.h>
 }
@@ -44,31 +46,77 @@ ArgusInputBackend::~ArgusInputBackend()
 
 bool ArgusInputBackend::open()
 {
-  return m_session.open(m_settings);
+  if(m_settings.syncRig.empty())
+  {
+    m_session = &m_ownSession;
+    return m_ownSession.open(m_settings);
+  }
+
+  m_rig = acquireArgusRig(
+      m_settings.syncRig, std::max<std::size_t>(m_settings.sensorIds.size(), 1));
+  if(!m_rig || !m_rig->open(m_settings))
+    return false;
+
+  auto* session = m_rig->sessionFor(m_settings.syncMember);
+  if(!session)
+  {
+    qWarning() << "Argus: no session for rig member" << m_settings.syncMember;
+    return false;
+  }
+
+  m_stream = m_rig->streamFor(m_settings.syncMember);
+  // Refused rather than clamped: a member reading a stream that is not its own
+  // renders the wrong sensor, and two members both landing on stream 0 look
+  // perfectly synchronised because they are the same eye twice.
+  if(m_stream >= session->streamCount())
+  {
+    qWarning() << "Argus: rig member" << m_settings.syncMember
+               << "has no stream of its own in a session of"
+               << int(session->streamCount()) << "-- refusing to render a "
+                                                 "sensor that is not this one";
+    return false;
+  }
+
+  m_session = session;
+  return true;
+}
+
+const std::vector<ArgusSlot>& ArgusInputBackend::mySlots() const noexcept
+{
+  static const std::vector<ArgusSlot> none;
+  return m_session ? m_session->slots(m_stream) : none;
 }
 
 int ArgusInputBackend::width() const noexcept
 {
-  return int(m_session.width());
+  return m_session ? int(m_session->width()) : 0;
 }
 int ArgusInputBackend::height() const noexcept
 {
-  return int(m_session.height());
+  return m_session ? int(m_session->height()) : 0;
 }
 std::uint32_t ArgusInputBackend::frameByteSize() const noexcept
 {
-  return m_session.frameByteSize();
+  return m_session ? m_session->frameByteSize() : 0u;
 }
 std::int32_t ArgusInputBackend::resolvedSensorMode() const noexcept
 {
-  return m_session.resolvedSensorMode();
+  return m_session ? m_session->resolvedSensorMode() : -1;
+}
+
+score::gfx::DMACaptureBackend::SyncMembership
+ArgusInputBackend::syncGroup() noexcept
+{
+  if(!m_rig)
+    return {};
+  return {&m_rig->group(), m_settings.syncMember};
 }
 
 Video::ImageFormat ArgusInputBackend::imageFormat() const
 {
   Video::ImageFormat f;
-  f.width = int(m_session.width());
-  f.height = int(m_session.height());
+  f.width = width();
+  f.height = height();
   // Argus emits NV12 and nothing else.
   f.pixel_format = AV_PIX_FMT_NV12;
   // The ISP outputs BT.709 limited range. Argus can report the colour space
@@ -101,7 +149,7 @@ std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>
 ArgusInputBackend::makeDmaBufRung()
 {
 #if defined(__linux__)
-  const auto& slots = m_session.slots();
+  const auto& slots = mySlots();
   if(slots.empty())
     return {};
 
@@ -129,7 +177,7 @@ ArgusInputBackend::makeDmaBufRung()
   {
     // DRM_FORMAT_NV12, spelled out to avoid a drm_fourcc.h dependency.
     constexpr std::uint32_t DRM_NV12 = 0x3231564eu;
-    strat->requestExternalImage(DRM_NV12, int(m_session.height()));
+    strat->requestExternalImage(DRM_NV12, height());
   }
   m_dmabuf = strat.get();
   return strat;
@@ -143,10 +191,10 @@ ArgusInputBackend::makeBorrowedRung()
 {
   // Needs the surfaces host-mapped; that mapping is not free on Tegra, so it
   // is only done when this rung is actually being tried.
-  if(!m_session.mapHost())
+  if(!m_session || !m_session->mapHost())
     return {};
 
-  const auto& slots = m_session.slots();
+  const auto& slots = mySlots();
   std::vector<score::gfx::interop::BorrowedHostBuffer> bufs;
   bufs.reserve(slots.size());
   for(const auto& s : slots)
@@ -204,7 +252,8 @@ ArgusInputBackend::makeCpuStrategy()
 {
   // The universal fallback copies out of the slot, so the surfaces must be
   // readable from the host.
-  m_session.mapHost();
+  if(m_session)
+    m_session->mapHost();
   return std::make_unique<ArgusCpuCapture>();
 }
 
@@ -221,49 +270,66 @@ void ArgusInputBackend::setStrategy(
     m_borrowed = nullptr;
 }
 
+void ArgusInputBackend::publishUngrouped(std::size_t slot)
+{
+  if(slot >= mySlots().size())
+    return;
+  if(m_strategy)
+  {
+    // A borrowed rung takes ownership here; if it declines the frame (its ring
+    // is full) the slot is left for the release drain, which is what stops a
+    // stalled renderer from starving the ISP.
+    if(!m_strategy->ingestFrame(slot))
+      return;
+  }
+  m_ring.latestSlot.store(slot, std::memory_order_release);
+  m_ring.latestFrameId.fetch_add(1, std::memory_order_release);
+}
+
+std::uint32_t ArgusInputBackend::takeReturnedUngrouped()
+{
+  if(m_dmabuf)
+    return m_dmabuf->takeReturnedSlots();
+  if(m_borrowed)
+    return m_borrowed->takeReturnedSlots();
+  // The CPU rung copies the frame out during acquireForRender, so the slot is
+  // free again as soon as it has been published.
+  const auto slotCount = mySlots().size();
+  return slotCount >= 32u ? 0xFFFFFFFFu : ((1u << slotCount) - 1u);
+}
+
 void ArgusInputBackend::start()
 {
-  if(!m_session.isOpen())
+  if(m_rig)
+  {
+    // The session belongs to the rig and is already running, or starts with
+    // this member; either way the rig decides, because one session feeds every
+    // sensor and cannot be started once per node.
+    m_rig->arm(m_settings.syncMember, this);
+    return;
+  }
+
+  if(!m_ownSession.isOpen())
     return;
 
-  const auto slotCount = m_session.slots().size();
-
-  m_session.start(
+  m_ownSession.start(
       // Capture thread: publish the slot the ISP just filled.
-      [this, slotCount](
-          const std::size_t* slots, const std::uint64_t*, std::size_t n) {
-        if(n != 1)
-          return;
-        const auto slot = slots[0];
-        if(slot >= slotCount)
-          return;
-        if(m_strategy)
-        {
-          // A borrowed rung takes ownership here; if it declines the frame
-          // (its ring is full) the slot is left for the release drain below,
-          // which is what stops a stalled renderer from starving the ISP.
-          if(!m_strategy->ingestFrame(slot))
-            return;
-        }
-        m_ring.latestSlot.store(slot, std::memory_order_release);
-        m_ring.latestFrameId.fetch_add(1, std::memory_order_release);
+      [this](const std::size_t* slots, const std::uint64_t*, std::size_t n) {
+        if(n == 1)
+          publishUngrouped(slots[0]);
       },
       // Capture thread: which slots may go back to the ISP.
-      [this, slotCount](std::size_t) -> std::uint32_t {
-        if(m_dmabuf)
-          return m_dmabuf->takeReturnedSlots();
-        if(m_borrowed)
-          return m_borrowed->takeReturnedSlots();
-        // The CPU rung copies the frame out during acquireForRender, so the
-        // slot is free again as soon as it has been published.
-        return slotCount >= 32u ? 0xFFFFFFFFu
-                                : ((1u << slotCount) - 1u);
-      });
+      [this](std::size_t) { return takeReturnedUngrouped(); });
 }
 
 void ArgusInputBackend::stop()
 {
-  m_session.stop();
+  if(m_rig)
+  {
+    m_rig->disarm(m_settings.syncMember);
+    return;
+  }
+  m_ownSession.stop();
 }
 
 }

@@ -160,11 +160,13 @@ if(ARGUS_LIBRARY AND ARGUS_INCLUDE_DIRS)
     "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusRuntime.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusRuntimeInternal.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusSession.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusSyncRig.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusInputBackend.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusCaptureNode.hpp")
   list(APPEND VIDEOIO_SRCS
     "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusRuntime.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusSession.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusSyncRig.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusInputBackend.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/argus/ArgusCaptureNode.cpp")
   list(APPEND VIDEOIO_DEFS SCORE_HAS_ARGUS=1)
