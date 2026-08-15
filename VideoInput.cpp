@@ -54,10 +54,13 @@
 #include <bluefish/BluefishSettings.hpp>
 #endif
 
-#if defined(SCORE_HAS_V4L2)
-#include <v4l2/V4L2CaptureNode.hpp>
+// Unconditional: m_render holds these on every platform, and ~VideoInputDevice
+// is defined here. Behind a vendor guard, the defaulted destructor would be
+// instantiated against a forward declaration everywhere that vendor is absent.
 #include <Gfx/CaptureControlTree.hpp>
 
+#if defined(SCORE_HAS_V4L2)
+#include <v4l2/V4L2CaptureNode.hpp>
 #include <v4l2/V4L2ControlTree.hpp>
 #include <v4l2/V4L2Session.hpp>
 #endif
