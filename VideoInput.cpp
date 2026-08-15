@@ -415,11 +415,18 @@ bool VideoInputDevice::reconnect()
                 QString("cam%1").arg(i).toStdString());
           }
 
+          {
+            auto& root = dev->get_root_node();
+            QStringList kids;
+            for(const auto& c : root.children_copy())
+              kids.push_back(QString::fromStdString(c->get_name()));
+            qDebug() << "Direct Video Input: V4L2 rig of" << paths.size()
+                     << "sensors:" << paths << "-> children:" << kids;
+          }
+
           m_dev = std::move(dev);
           m_protocol = nullptr;
           deviceChanged(nullptr, m_dev.get());
-          qDebug() << "Direct Video Input: V4L2 rig of" << paths.size()
-                   << "sensors:" << paths;
           return connected();
         }
 
