@@ -15,7 +15,8 @@
 
 namespace Gfx::V4L2
 {
-namespace
+// Named for the same reason as V4L2Controls.cpp: unity builds share one TU.
+namespace controltree_detail
 {
 /// What the tree publishes for a control holding the driver-side value @p raw.
 ///
@@ -198,7 +199,8 @@ std::string descriptionFor(const ControlDesc& c)
     d += ", currently inactive";
   return d;
 }
-} // namespace
+} // namespace controltree_detail
+using namespace controltree_detail;
 
 ControlTree::ControlTree(
     const std::string& devicePath, ossia::net::device_base& dev,

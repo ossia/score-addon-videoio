@@ -15,37 +15,11 @@
 
 namespace Gfx::V4L2
 {
-namespace
+// Named, not anonymous: this addon is compiled as a unity build, which
+// concatenates translation units, and V4L2Session.cpp has helpers of the same
+// name. An anonymous namespace does not separate them once they share a TU.
+namespace controls_detail
 {
-/// Routed through the shared libv4l2 loader when it is present. Controls need
-/// none of that library's format emulation, so a machine without it falls back
-/// to the raw syscall rather than losing the tree entirely.
-int xioctl(int fd, unsigned long req, void* arg) noexcept
-{
-  const auto& lib = score::gfx::v4l2::Libv4l2::instance();
-  int r;
-  do
-  {
-    r = lib.available() ? lib.ioctl(fd, req, arg) : ::ioctl(fd, req, arg);
-  } while(r == -1 && errno == EINTR);
-  return r;
-}
-
-int xopen(const char* path, int flags) noexcept
-{
-  const auto& lib = score::gfx::v4l2::Libv4l2::instance();
-  return lib.available() ? lib.open(path, flags) : ::open(path, flags);
-}
-
-void xclose(int fd) noexcept
-{
-  const auto& lib = score::gfx::v4l2::Libv4l2::instance();
-  if(lib.available())
-    lib.close(fd);
-  else
-    ::close(fd);
-}
-
 std::optional<ControlKind> kindOf(std::uint32_t type) noexcept
 {
   switch(type)
@@ -81,7 +55,8 @@ bool hasPayload(const v4l2_query_ext_ctrl& q) noexcept
   return q.flags & V4L2_CTRL_FLAG_HAS_PAYLOAD;
 }
 
-} // namespace
+} // namespace controls_detail
+using namespace controls_detail;
 
 bool ControlDesc::exceedsInt32() const noexcept
 {
@@ -142,7 +117,7 @@ ControlSet& ControlSet::operator=(ControlSet&& other) noexcept
 bool ControlSet::open(const std::string& path)
 {
   close();
-  m_fd = xopen(path.c_str(), O_RDWR | O_CLOEXEC | O_NONBLOCK);
+  m_fd = score::gfx::v4l2::openDevice(path.c_str(), O_RDWR | O_CLOEXEC | O_NONBLOCK);
   if(m_fd < 0)
     return false;
   enumerate();
@@ -153,7 +128,7 @@ void ControlSet::close()
 {
   if(m_fd >= 0)
   {
-    xclose(m_fd);
+    score::gfx::v4l2::closeDevice(m_fd);
     m_fd = -1;
   }
   m_controls.clear();
@@ -172,7 +147,7 @@ void ControlSet::enumerate()
   {
     v4l2_query_ext_ctrl q{};
     q.id = id | V4L2_CTRL_FLAG_NEXT_CTRL | V4L2_CTRL_FLAG_NEXT_COMPOUND;
-    if(xioctl(m_fd, VIDIOC_QUERY_EXT_CTRL, &q) != 0)
+    if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_QUERY_EXT_CTRL, &q) != 0)
       break;
     // A driver that answers NEXT_CTRL with an id that does not advance would
     // spin this loop forever. Enumeration is strictly increasing by contract,
@@ -224,7 +199,7 @@ void ControlSet::enumerate()
         v4l2_querymenu m{};
         m.id = q.id;
         m.index = static_cast<std::uint32_t>(i);
-        if(xioctl(m_fd, VIDIOC_QUERYMENU, &m) != 0)
+        if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_QUERYMENU, &m) != 0)
           continue;
 
         ControlMenuEntry e;
@@ -300,7 +275,7 @@ std::optional<std::int64_t> ControlSet::get(std::uint32_t id) const
 #ifdef V4L2_CTRL_WHICH_CUR_VAL
   cs.which = V4L2_CTRL_WHICH_CUR_VAL;
 #endif
-  if(xioctl(m_fd, VIDIOC_G_EXT_CTRLS, &cs) != 0)
+  if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_G_EXT_CTRLS, &cs) != 0)
     return std::nullopt;
 
   return d->int64Type ? c.value64 : static_cast<std::int64_t>(c.value);
@@ -324,7 +299,7 @@ std::optional<std::string> ControlSet::getString(std::uint32_t id) const
   v4l2_ext_controls cs{};
   cs.count = 1;
   cs.controls = &c;
-  if(xioctl(m_fd, VIDIOC_G_EXT_CTRLS, &cs) != 0)
+  if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_G_EXT_CTRLS, &cs) != 0)
     return std::nullopt;
 
   buf.resize(std::strlen(buf.c_str()));
@@ -362,7 +337,7 @@ ControlWriteResult ControlSet::set(std::uint32_t id, std::int64_t value)
   v4l2_ext_controls cs{};
   cs.count = 1;
   cs.controls = &c;
-  if(xioctl(m_fd, VIDIOC_S_EXT_CTRLS, &cs) != 0)
+  if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_S_EXT_CTRLS, &cs) != 0)
   {
     r.error = errno;
     return r;
@@ -407,7 +382,7 @@ ControlWriteResult ControlSet::setString(std::uint32_t id, const std::string& va
   v4l2_ext_controls cs{};
   cs.count = 1;
   cs.controls = &c;
-  if(xioctl(m_fd, VIDIOC_S_EXT_CTRLS, &cs) != 0)
+  if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_S_EXT_CTRLS, &cs) != 0)
   {
     r.error = errno;
     return r;
@@ -424,7 +399,7 @@ void ControlSet::refresh()
   {
     v4l2_query_ext_ctrl q{};
     q.id = c.id;
-    if(xioctl(m_fd, VIDIOC_QUERY_EXT_CTRL, &q) != 0)
+    if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_QUERY_EXT_CTRL, &q) != 0)
       continue;
     c.min = q.minimum;
     c.max = q.maximum;
@@ -449,7 +424,7 @@ bool ControlSet::subscribeEvents()
     // the enumeration saw until something moved; with it, every control
     // reports itself once on subscription and the tree starts truthful.
     sub.flags = V4L2_EVENT_SUB_FL_SEND_INITIAL;
-    if(xioctl(m_fd, VIDIOC_SUBSCRIBE_EVENT, &sub) == 0)
+    if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_SUBSCRIBE_EVENT, &sub) == 0)
       any = true;
   }
   return any;
@@ -465,7 +440,7 @@ bool ControlSet::pollEvents(const std::function<void(const Event&)>& onEvent)
   for(int guard = 0; guard < 4096; ++guard)
   {
     v4l2_event ev{};
-    if(xioctl(m_fd, VIDIOC_DQEVENT, &ev) != 0)
+    if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_DQEVENT, &ev) != 0)
     {
       // ENOENT means the queue is empty; anything else and the device is gone.
       return errno == EAGAIN || errno == ENOENT;
