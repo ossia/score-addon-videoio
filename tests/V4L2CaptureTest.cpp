@@ -33,6 +33,7 @@
 #include <v4l2/V4L2GbmAllocator.hpp>
 #include <v4l2/V4L2NvBufAllocator.hpp>
 #include <v4l2/V4L2Session.hpp>
+#include <v4l2/V4L2SyncRig.hpp>
 
 #include <Gfx/Graph/BackgroundNode.hpp>
 #include <Gfx/Graph/Graph.hpp>
@@ -793,6 +794,29 @@ int runRig(const Args& a, score::gfx::GraphicsApi api)
 
   std::printf("\nsamples %lld, generation mismatches %lld\n", samples, mismatched);
   std::printf("members show distinct pictures: %s\n", identical ? "NO" : "yes");
+
+  // The registry hands back the correlator the backends are using, so these are
+  // the live numbers rather than a reconstruction. A rig that fails only says
+  // "no frames"; these say which way it failed. `stranded` above zero is a
+  // buffer the driver will never see again, and `displaced` climbing at the
+  // frame rate is a member whose partner stopped delivering.
+  if(auto rig = Gfx::V4L2::acquireSyncRig("v4l2-rig-test", n))
+  {
+    auto& g = rig->group();
+    std::printf(
+        "sets %llu, displaced %llu, incomplete %llu, lapped %llu, stranded "
+        "%llu, worst skew %.3f ms\n",
+        (unsigned long long)rig->setsPublished(),
+        (unsigned long long)rig->displacedFrames(),
+        (unsigned long long)g.incompleteCount(),
+        (unsigned long long)g.lappedCount(),
+        (unsigned long long)g.strandedCount(), double(g.maxSkewNs()) / 1e6);
+    if(g.strandedCount() > 0)
+      std::printf(
+          "WARNING: %llu captures could not be given back; the queue is on its "
+          "way to starving\n",
+          (unsigned long long)g.strandedCount());
+  }
 
   const bool pass
       = everyMemberLive && samples > 0 && mismatched == 0 && !identical;
