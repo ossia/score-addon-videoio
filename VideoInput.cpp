@@ -252,8 +252,10 @@ void VideoInputDevice::disconnect()
   // Before the device: a control tree holds parameters owned by the device's
   // nodes and a socket notifier that can fire at any time, so outliving the
   // device by even one event means pushing into freed memory.
+#if defined(SCORE_HAS_V4L2)
   m_controls.clear();
   m_render.clear();
+#endif
   auto prev = std::move(m_dev);
   m_dev = {};
   deviceChanged(prev.get(), nullptr);
