@@ -141,10 +141,12 @@ void checkWrite(ControlSet& set, const ControlDesc& c)
   }
 
   // Not a failure: the driver is the authority on what it holds, and some
-  // publish a range they do not honour. An Orin advertises exposure_short as
-  // [27,660000] and always reads back 0, with or without HDR -- the control is
-  // simply not implemented on that sensor. Publishing the true value is right;
-  // asserting the driver's own contract against it is not.
+  // publish a range they do not honour. Measured on an Orin, exposure_short
+  // sits at 0 before anything writes it, below the minimum of 27 it declares
+  // for itself; once written it holds exactly what it was given. So a readback
+  // outside the advertised range is a real state a driver can be in, and the
+  // tree's job is to show it rather than assert the driver's contract back at
+  // it.
   if(r.value < c.min || r.value > c.max)
   {
     ++g_anomalies;
