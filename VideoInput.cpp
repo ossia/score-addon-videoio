@@ -16,6 +16,7 @@
 #include <ossia/network/generic/generic_device.hpp>
 
 #include <QCheckBox>
+#include <QRegularExpression>
 #include <QVBoxLayout>
 #include <QComboBox>
 
@@ -1224,7 +1225,37 @@ public:
 };
 #endif
 
+/// Device names have their own character set -- no '/', no ',' -- and must not
+/// collide, so the path cannot be smuggled in to disambiguate. `.1`, `.2` is
+/// how the rest of score numbers siblings.
+static QString uniqueDeviceName(const QString& base, std::vector<std::string>& taken)
+{
+  std::string name = base.toStdString();
+  ossia::net::sanitize_device_name(name);
+  name = ossia::net::sanitize_name(name, taken);
+  taken.push_back(name);
+  return QString::fromStdString(name);
+}
+
 #if defined(SCORE_HAS_V4L2)
+/// A name for the camera rather than for the plumbing behind it.
+///
+/// V4L2's card string is whatever the driver felt like: a USB webcam gives its
+/// product name, but Tegra's VI driver gives "vi-output, imx676 9-001a" -- the
+/// pipeline entity, the sensor, and its i2c address. Only the middle part names
+/// the camera.
+static QString v4l2FriendlyName(const Gfx::V4L2::DeviceInfo& dev)
+{
+  QString card = QString::fromStdString(dev.card).trimmed();
+  if(const auto comma = card.lastIndexOf(','); comma >= 0)
+    card = card.mid(comma + 1).trimmed();
+  static const QRegularExpression i2cAddress{R"(\s+\d+-[0-9a-fA-F]{4}$)"};
+  card.remove(i2cAddress);
+  if(card.isEmpty())
+    card = QString::fromStdString(dev.path).section('/', -1);
+  return card;
+}
+
 class V4L2VideoInputEnumerator final : public Device::DeviceEnumerator
 {
 public:
@@ -1232,14 +1263,19 @@ public:
       std::function<void(const QString&, const Device::DeviceSettings&)> func)
       const override
   {
+    std::vector<std::string> taken;
     for(const auto& dev : Gfx::V4L2::enumerateDevices())
     {
       if(!dev.canCapture)
         continue;
       Device::DeviceSettings s;
-      // The card name alone is ambiguous (a UVC camera exposes several nodes),
-      // so the path is part of the label.
-      s.name = QString::fromStdString(dev.card + " (" + dev.path + ")");
+      // The card name alone is ambiguous -- a UVC camera exposes several nodes
+      // under one card -- so the path disambiguates the label. It stays out of
+      // the name: '/' is not a legal device character and would arrive as
+      // "(_dev_video0)" glued to the end of every camera.
+      const QString label
+          = QString::fromStdString(dev.card + " (" + dev.path + ")");
+      s.name = uniqueDeviceName(v4l2FriendlyName(dev), taken);
       s.protocol = VideoInputProtocolFactory::static_concreteKey();
       VideoInputSettings set;
       set.vendor = Vendor::V4L2;
@@ -1251,7 +1287,7 @@ public:
       set.devicePath = QString::fromStdString(dev.path);
       set.deviceName = s.name;
       s.deviceSpecificSettings = QVariant::fromValue(set);
-      func(s.name, s);
+      func(label, s);
     }
   }
 };
@@ -1270,14 +1306,17 @@ public:
     if(!Gfx::Argus::argusAvailable())
       return;
 
+    std::vector<std::string> taken;
     for(const auto& cam : Gfx::Argus::argusCameras())
     {
       Device::DeviceSettings s;
-      // The model repeats across sensors of the same rig, so the index has to
-      // be part of the label or the two are indistinguishable in the list.
-      s.name = QString("%1 (sensor %2)")
-                   .arg(QString::fromStdString(cam.model))
-                   .arg(cam.index);
+      // The label carries the sensor index because the model repeats across a
+      // rig; the device name must not, because it is an address and two
+      // sensors of the same model are told apart by the ".1" suffix instead.
+      const QString label = QString("%1 (sensor %2)")
+                                .arg(QString::fromStdString(cam.model))
+                                .arg(cam.index);
+      s.name = uniqueDeviceName(QString::fromStdString(cam.model), taken);
       s.protocol = VideoInputProtocolFactory::static_concreteKey();
       VideoInputSettings set;
       set.vendor = Vendor::Argus;
@@ -1286,7 +1325,7 @@ public:
       set.deviceIndex = int(cam.index);
       set.deviceName = s.name;
       s.deviceSpecificSettings = QVariant::fromValue(set);
-      func(s.name, s);
+      func(label, s);
     }
   }
 };
