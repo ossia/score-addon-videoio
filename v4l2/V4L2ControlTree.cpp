@@ -108,7 +108,13 @@ std::optional<std::int64_t> driverValue(const ControlDesc& c, const ossia::value
 
     case ControlKind::Integer:
     case ControlKind::Bitmask:
-      return std::int64_t(ossia::convert<float>(v));
+      // Only the widened controls go through float. A 32-bit range converted
+      // via float loses precision above 2^24: an Orin's frame_rate tops out at
+      // 64370377, which no float can represent, so the driver would receive a
+      // value the user never asked for.
+      if(c.exceedsInt32())
+        return std::int64_t(ossia::convert<float>(v));
+      return std::int64_t(ossia::convert<int>(v));
 
     case ControlKind::Button:
       return 0;

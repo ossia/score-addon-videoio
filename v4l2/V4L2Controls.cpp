@@ -174,6 +174,11 @@ void ControlSet::enumerate()
     q.id = id | V4L2_CTRL_FLAG_NEXT_CTRL | V4L2_CTRL_FLAG_NEXT_COMPOUND;
     if(xioctl(m_fd, VIDIOC_QUERY_EXT_CTRL, &q) != 0)
       break;
+    // A driver that answers NEXT_CTRL with an id that does not advance would
+    // spin this loop forever. Enumeration is strictly increasing by contract,
+    // so treat a repeat as the end rather than trusting it.
+    if(q.id <= id && !m_controls.empty())
+      break;
     id = q.id;
 
     if(q.type == V4L2_CTRL_TYPE_CTRL_CLASS)
@@ -455,7 +460,9 @@ bool ControlSet::pollEvents(const std::function<void(const Event&)>& onEvent)
   if(m_fd < 0)
     return false;
 
-  for(;;)
+  // Bounded: the driver's event queue is finite, and a dequeue that never
+  // drains would otherwise wedge the thread draining it -- the Qt thread.
+  for(int guard = 0; guard < 4096; ++guard)
   {
     v4l2_event ev{};
     if(xioctl(m_fd, VIDIOC_DQEVENT, &ev) != 0)
@@ -493,6 +500,7 @@ bool ControlSet::pollEvents(const std::function<void(const Event&)>& onEvent)
 
     onEvent(out);
   }
+  return true;
 }
 
 } // namespace Gfx::V4L2
