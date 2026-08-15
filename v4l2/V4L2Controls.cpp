@@ -196,6 +196,7 @@ void ControlSet::enumerate()
     d.kind = *kind;
     d.name = q.name;
     d.group = currentGroup;
+    d.int64Type = (q.type == V4L2_CTRL_TYPE_INTEGER64);
     d.min = q.minimum;
     d.max = q.maximum;
     d.step = static_cast<std::int64_t>(q.step);
@@ -297,7 +298,7 @@ std::optional<std::int64_t> ControlSet::get(std::uint32_t id) const
   if(xioctl(m_fd, VIDIOC_G_EXT_CTRLS, &cs) != 0)
     return std::nullopt;
 
-  return d->exceedsInt32() ? c.value64 : static_cast<std::int64_t>(c.value);
+  return d->int64Type ? c.value64 : static_cast<std::int64_t>(c.value);
 }
 
 std::optional<std::string> ControlSet::getString(std::uint32_t id) const
@@ -348,7 +349,7 @@ ControlWriteResult ControlSet::set(std::uint32_t id, std::int64_t value)
 
   v4l2_ext_control c{};
   c.id = id;
-  if(d->exceedsInt32())
+  if(d->int64Type)
     c.value64 = value;
   else
     c.value = static_cast<std::int32_t>(value);

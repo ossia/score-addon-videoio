@@ -69,6 +69,12 @@ struct ControlDesc
   std::int64_t step{1};
   std::int64_t defaultValue{};
 
+  /// The driver stores this control in the 64-bit half of the ext-control
+  /// union. Determined by the V4L2 type, never by whether the range happens to
+  /// fit 32 bits: on little-endian the two alias, so the wrong one appears to
+  /// work, which is how it stays wrong.
+  bool int64Type{};
+
   bool readOnly{};
   bool writeOnly{};
   bool inactive{};    ///< currently unsettable because another control says so
