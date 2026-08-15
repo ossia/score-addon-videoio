@@ -18,12 +18,12 @@ class QComboBox;
 class QFormLayout;
 class QLineEdit;
 
-#if defined(SCORE_HAS_V4L2)
 namespace Gfx
 {
 class CaptureControlTree;
 }
 
+#if defined(SCORE_HAS_V4L2)
 namespace Gfx::V4L2
 {
 class ControlTree;
@@ -98,19 +98,19 @@ private:
   /// One per sensor, holding the control fd and the nodes under
   /// `<stream>/controls`. Kept here because they must outlive neither more nor
   /// less than the device they describe.
-  // Both are held by unique_ptr to a type that only exists where V4L2 does, so
-  // they cannot be declared unconditionally: destroying the vector needs the
-  // complete type, and the defaulted destructor in the .cpp would be
-  // instantiated against a forward declaration everywhere else. Reproduced by
-  // compiling this file with SCORE_HAS_V4L2 undefined, which is what macOS and
-  // Windows do.
+  // Held by unique_ptr to a type that only exists where V4L2 does, so it cannot
+  // be declared unconditionally: destroying the vector needs the complete type,
+  // and the defaulted destructor in the .cpp would be instantiated against a
+  // forward declaration everywhere else. Reproduced by compiling this file with
+  // SCORE_HAS_V4L2 undefined, which is what macOS and Windows do.
 #if defined(SCORE_HAS_V4L2)
   mutable std::vector<std::unique_ptr<Gfx::V4L2::ControlTree>> m_controls;
-
-  /// The score-side `/render/` group per stream: demosaic corrections and
-  /// viewport fitting, which no driver knows about.
-  mutable std::vector<std::unique_ptr<Gfx::CaptureControlTree>> m_render;
 #endif
+
+  /// The score-side `/render/` group per stream: sensor corrections and
+  /// viewport fitting, which no driver knows about. Not vendor-specific, so
+  /// unlike the driver controls it exists on every platform.
+  mutable std::vector<std::unique_ptr<Gfx::CaptureControlTree>> m_render;
 };
 
 class VideoInputSettingsWidget final : public Device::ProtocolSettingsWidget

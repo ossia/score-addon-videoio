@@ -254,8 +254,8 @@ void VideoInputDevice::disconnect()
   // device by even one event means pushing into freed memory.
 #if defined(SCORE_HAS_V4L2)
   m_controls.clear();
-  m_render.clear();
 #endif
+  m_render.clear();
   auto prev = std::move(m_dev);
   m_dev = {};
   deviceChanged(prev.get(), nullptr);
@@ -498,7 +498,63 @@ bool VideoInputDevice::reconnect()
             a.height = h;
           }
         }
-        registerGpuDirect(new Gfx::Argus::ArgusCaptureNode{a});
+        // A rig: `rigPaths` names the other sensors of the same head. An Argus
+        // sensor is an index into the camera provider rather than a device
+        // node, so the field is read as a comma-separated id list with
+        // `deviceIndex` as member 0 -- the same "the rest of the rig" meaning
+        // it has for V4L2, spelled the way this vendor addresses a sensor.
+        std::vector<std::uint32_t> ids{a.sensorId};
+        for(const auto& extra : set.rigPaths.split(',', Qt::SkipEmptyParts))
+        {
+          bool ok = false;
+          const auto id = extra.trimmed().toUInt(&ok);
+          if(ok && std::find(ids.begin(), ids.end(), id) == ids.end())
+            ids.push_back(id);
+          else if(!ok)
+            qWarning() << "Direct Video Input: Argus rig member" << extra
+                       << "is not a sensor id; ignored";
+        }
+
+        if(ids.size() > 1)
+        {
+          // Unlike V4L2, the members do not merely share a correlator: they
+          // share the capture session itself where the driver allows it, which
+          // is what puts both eyes on one exposure and one clock.
+          a.sensorIds = ids;
+          a.syncRig = settings().name.toStdString();
+
+          auto dev = std::make_unique<Gfx::multi_texture_input_device>(
+              std::make_unique<Gfx::simple_texture_input_protocol>(),
+              settings().name.toStdString());
+
+          for(std::size_t i = 0; i < ids.size(); ++i)
+          {
+            auto member = a;
+            member.sensorId = ids[i];
+            member.syncMember = i;
+
+            auto* node = new Gfx::Argus::ArgusCaptureNode{member};
+            auto* streamNode = dev->add_stream(
+                node, &plug->exec, QString("cam%1").arg(int(i)).toStdString());
+            if(streamNode)
+              m_render.push_back(std::make_unique<Gfx::CaptureControlTree>(
+                  node->adjustments(), *dev, *streamNode));
+          }
+
+          qDebug() << "Direct Video Input: Argus rig of" << int(ids.size())
+                   << "sensors:" << set.deviceIndex << "+" << set.rigPaths;
+
+          m_dev = std::move(dev);
+          m_protocol = nullptr;
+          deviceChanged(nullptr, m_dev.get());
+          return connected();
+        }
+
+        auto* argusNode = new Gfx::Argus::ArgusCaptureNode{a};
+        registerGpuDirect(argusNode);
+        if(m_dev)
+          m_render.push_back(std::make_unique<Gfx::CaptureControlTree>(
+              argusNode->adjustments(), *m_dev, m_dev->get_root_node()));
         qDebug() << "Direct Video Input: Argus camera node";
         return connected();
 #else
@@ -571,7 +627,8 @@ VideoInputSettingsWidget::VideoInputSettingsWidget(QWidget* parent)
 
   m_rigPathsEdit = new QLineEdit{this};
   m_rigPathsEdit->setPlaceholderText(
-      QObject::tr("e.g. /dev/video1 -- leave empty for a single camera"));
+      QObject::tr("e.g. /dev/video1, or 1 for an Argus sensor id -- leave "
+                  "empty for a single camera"));
   m_layout->addRow(tr("Rig: other cameras"), m_rigPathsEdit);
   this->checkForChanges(m_rigPathsEdit);
 
