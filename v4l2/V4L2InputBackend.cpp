@@ -155,6 +155,9 @@ bool V4L2InputBackend::open()
                << "-- capturing unsynchronised";
     m_rig.reset();
   }
+  if(m_rig)
+    m_settings.slotCount
+        = std::max(m_settings.slotCount, V4L2InputSettings::rigSlotCount);
 
   // Seed the live-format channel with the geometry we just negotiated. The
   // renderer baselines the channel at the end of its init(); without this the

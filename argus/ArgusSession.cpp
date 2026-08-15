@@ -824,10 +824,35 @@ bool ArgusSession::start(
                            takeReturned = std::move(takeReturned)] {
     while(d->running.load(std::memory_order_acquire))
     {
+      const std::size_t ns = d->streams.size();
+
+      // Before asking for another buffer, not only after a capture succeeds:
+      // the ISP has nothing to fill once every slot is out on loan, so the
+      // acquire below times out, and a drain that only runs after a successful
+      // capture would never run again. A rig reaches that state far more
+      // readily than one camera -- a member whose renderer has not settled
+      // holds nothing back, but a stopped render thread holds everything.
+      if(takeReturned)
+      {
+        for(std::size_t si = 0; si < ns; ++si)
+        {
+          auto& stm = *d->streams[si];
+          std::uint32_t mask = takeReturned(si);
+          for(std::size_t i = 0; mask && i < stm.pool.size(); ++i)
+          {
+            if(mask & (1u << i))
+            {
+              if(stm.pool[i].buffer)
+                stm.iStream->releaseBuffer(stm.pool[i].buffer);
+              mask &= ~(1u << i);
+            }
+          }
+        }
+      }
+
       // One capture delivers one buffer per stream. Acquire them all before
       // publishing anything: half a capture must never be visible downstream,
       // which is the whole reason the renderer can trust the set it is given.
-      const std::size_t ns = d->streams.size();
       std::size_t slotIdx[kMaxSyncSensors]{};
       std::uint64_t stamps[kMaxSyncSensors]{};
       Buffer* acquired[kMaxSyncSensors]{};
@@ -958,25 +983,6 @@ bool ArgusSession::start(
         }
       }
 
-      // Give back only what the renderer has finished with. Releasing the slot
-      // we just published would let the ISP overwrite the frame being sampled.
-      if(takeReturned)
-      {
-        for(std::size_t si = 0; si < ns; ++si)
-        {
-          auto& stm = *d->streams[si];
-          std::uint32_t mask = takeReturned(si);
-          for(std::size_t i = 0; mask && i < stm.pool.size(); ++i)
-          {
-            if(mask & (1u << i))
-            {
-              if(stm.pool[i].buffer)
-                stm.iStream->releaseBuffer(stm.pool[i].buffer);
-              mask &= ~(1u << i);
-            }
-          }
-        }
-      }
     }
   });
   return true;

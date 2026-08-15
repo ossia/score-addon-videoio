@@ -62,6 +62,15 @@ struct V4L2InputSettings
   std::uint32_t height{};
   std::uint32_t fourcc{};
   std::size_t slotCount{4};
+  /// What a rig member asks for instead.
+  ///
+  /// The group holds more of the queue than the ungrouped path does, and holds
+  /// it for longer: the capture being drawn, plus every capture still retiring
+  /// until the GPU can no longer be reading it (FramesInFlight + 1, so up to
+  /// four), plus the offer waiting for its partner to arrive. Four buffers
+  /// leaves the driver none to fill and the rig stalls -- which reads exactly
+  /// like a camera that stopped delivering.
+  static constexpr std::size_t rigSlotCount = 10;
 
   /// Name of the rig this device belongs to, shared with the other devices it
   /// must stay frame-locked to. Empty means the device stands alone and the
