@@ -56,6 +56,7 @@
 
 #if defined(SCORE_HAS_V4L2)
 #include <v4l2/V4L2CaptureNode.hpp>
+#include <v4l2/V4L2ControlTree.hpp>
 #include <v4l2/V4L2Session.hpp>
 #endif
 
@@ -246,6 +247,10 @@ VideoInputDevice::~VideoInputDevice() = default;
 void VideoInputDevice::disconnect()
 {
   Gfx::GfxInputDevice::disconnect();
+  // Before the device: a control tree holds parameters owned by the device's
+  // nodes and a socket notifier that can fire at any time, so outliving the
+  // device by even one event means pushing into freed memory.
+  m_controls.clear();
   auto prev = std::move(m_dev);
   m_dev = {};
   deviceChanged(prev.get(), nullptr);
@@ -410,9 +415,20 @@ bool VideoInputDevice::reconnect()
             member.syncMember = std::size_t(i);
             member.syncMembers = std::size_t(paths.size());
 
-            dev->add_stream(
+            auto* streamNode = dev->add_stream(
                 new Gfx::V4L2::V4L2CaptureNode{member}, &plug->exec,
                 QString("cam%1").arg(i).toStdString());
+
+            // Each sensor carries its own controls: on a rig the two are
+            // separate devices with separate exposures, and a single shared
+            // group would silently drive only one of them.
+            if(streamNode)
+            {
+              auto ctl = std::make_unique<Gfx::V4L2::ControlTree>(
+                  member.device, *dev, *streamNode);
+              if(ctl->valid())
+                m_controls.push_back(std::move(ctl));
+            }
           }
 
           {
@@ -431,6 +447,17 @@ bool VideoInputDevice::reconnect()
         }
 
         registerGpuDirect(new Gfx::V4L2::V4L2CaptureNode{v4l2});
+        if(m_dev)
+        {
+          auto ctl = std::make_unique<Gfx::V4L2::ControlTree>(
+              v4l2.device, *m_dev, m_dev->get_root_node());
+          if(ctl->valid())
+          {
+            qDebug() << "Direct Video Input: V4L2" << ctl->count()
+                     << "controls exposed";
+            m_controls.push_back(std::move(ctl));
+          }
+        }
         qDebug() << "Direct Video Input: V4L2 host-staged node";
         return connected();
 #else

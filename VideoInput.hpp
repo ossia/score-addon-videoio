@@ -8,12 +8,20 @@
 
 #include <VideoIOSettings.hpp>
 
+#include <memory>
+#include <vector>
+
 #include <verdigris>
 
 class QCheckBox;
 class QComboBox;
 class QFormLayout;
 class QLineEdit;
+
+namespace Gfx::V4L2
+{
+class ControlTree;
+}
 
 namespace Gfx::VideoIO
 {
@@ -79,6 +87,11 @@ private:
 
   Gfx::video_texture_input_protocol* m_protocol{};
   mutable std::unique_ptr<ossia::net::device_base> m_dev;
+
+  /// One per sensor, holding the control fd and the nodes under
+  /// `<stream>/controls`. Kept here because they must outlive neither more nor
+  /// less than the device they describe.
+  mutable std::vector<std::unique_ptr<Gfx::V4L2::ControlTree>> m_controls;
 };
 
 class VideoInputSettingsWidget final : public Device::ProtocolSettingsWidget

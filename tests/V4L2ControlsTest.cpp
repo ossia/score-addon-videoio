@@ -10,10 +10,20 @@
 //
 // Exit code is nonzero if any check fails.
 
+#include <v4l2/V4L2ControlTree.hpp>
 #include <v4l2/V4L2Controls.hpp>
+
+#include <ossia/network/base/osc_address.hpp>
+#include <ossia/network/common/path.hpp>
+#include <ossia/network/value/value.hpp>
+#include <ossia/network/generic/generic_device.hpp>
+#include <ossia/network/local/local.hpp>
+
+#include <QCoreApplication>
 
 #include <dirent.h>
 #include <poll.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -246,12 +256,142 @@ int runEvents(const std::string& path, int seconds)
   check(seen > 0, "no control event was received");
   return 0;
 }
+
+/// Builds the real ossia tree the device uses and checks the mapping end to
+/// end: every control becomes an addressable parameter, a write through the
+/// tree reaches the hardware, and a change made behind the tree's back comes
+/// home through V4L2_EVENT_CTRL.
+int runTree(const std::string& path, int argc, char** argv)
+{
+  QCoreApplication app{argc, argv};
+
+  ossia::net::generic_device dev{
+      std::make_unique<ossia::net::multiplex_protocol>(), "cam"};
+
+  ControlTree tree{path, dev, dev.get_root_node()};
+  if(!tree.valid())
+  {
+    std::printf("%s: cannot open\n", path.c_str());
+    return 1;
+  }
+
+  // A second, independent handle: what the driver really holds, so the test
+  // never validates the tree against its own cached idea of the hardware.
+  ControlSet truth;
+  truth.open(path);
+
+  auto* controlsNode = ossia::net::find_node(dev.get_root_node(), "/controls");
+  check(controlsNode != nullptr, "no /controls node was created");
+  if(!controlsNode)
+    return 1;
+
+  const auto kids = controlsNode->children_copy();
+  std::printf("\n=== %s: /controls has %zu nodes ===\n", path.c_str(), kids.size());
+  check(
+      kids.size() == tree.count(),
+      "the tree has " + std::to_string(kids.size()) + " nodes for "
+          + std::to_string(tree.count()) + " controls");
+
+  for(auto* k : kids)
+  {
+    auto* p = k->get_parameter();
+    check(p != nullptr, std::string{"/controls/"} + k->get_name() + " has no parameter");
+    if(!p)
+      continue;
+    std::printf(
+        "  %-36s %s\n", ossia::net::address_string_from_node(*k).c_str(),
+        ossia::value_to_pretty_string(p->value()).c_str());
+  }
+
+  // --- a write through the tree must reach the hardware --------------------
+  for(const auto& c : truth.controls())
+  {
+    if(c.readOnly || c.inactive || c.executeOnWrite)
+      continue;
+    if(c.kind != ControlKind::Integer || c.max <= c.min)
+      continue;
+
+    auto* node = ossia::net::find_node(dev.get_root_node(), "/controls/" + c.slug);
+    if(!node || !node->get_parameter())
+      continue;
+
+    const auto before = truth.get(c.id);
+    if(!before)
+      continue;
+
+    const int target = int(std::clamp<std::int64_t>(
+        c.min + (c.max - c.min) / 3, c.min, c.max));
+    node->get_parameter()->push_value(target);
+
+    const auto after = truth.get(c.id);
+    check(
+        after.has_value(),
+        c.slug + ": hardware unreadable after a tree write");
+    if(after)
+    {
+      // Not equality with `target`: the driver rounds to step. What must hold
+      // is that the hardware moved to where the tree now claims it is.
+      const auto shown = node->get_parameter()->value();
+      check(
+          ossia::convert<int>(shown) == int(*after),
+          c.slug + ": tree shows " + ossia::value_to_pretty_string(shown)
+              + " but hardware holds " + std::to_string(*after));
+    }
+    truth.set(c.id, *before);
+    break;
+  }
+
+  // --- a change made behind the tree's back must come home -----------------
+  for(const auto& c : truth.controls())
+  {
+    if(c.readOnly || c.inactive || c.executeOnWrite)
+      continue;
+    if(c.kind != ControlKind::Integer || c.max - c.min < 4)
+      continue;
+
+    auto* node = ossia::net::find_node(dev.get_root_node(), "/controls/" + c.slug);
+    if(!node || !node->get_parameter())
+      continue;
+
+    const auto before = truth.get(c.id);
+    if(!before)
+      continue;
+
+    const auto r = truth.set(c.id, *before == c.max ? c.min : c.max);
+    if(!r.ok)
+      continue;
+
+    // The notifier fires on the Qt event loop, so give it one.
+    for(int i = 0; i < 50; ++i)
+    {
+      app.processEvents();
+      if(ossia::convert<int>(node->get_parameter()->value()) == int(r.value))
+        break;
+      ::usleep(10000);
+    }
+
+    check(
+        ossia::convert<int>(node->get_parameter()->value()) == int(r.value),
+        c.slug + ": an external write of " + std::to_string(r.value)
+            + " did not reach the tree (it shows "
+            + ossia::value_to_pretty_string(node->get_parameter()->value()) + ")");
+
+    std::printf(
+        "  external write: %s -> tree shows %s\n", c.slug.c_str(),
+        ossia::value_to_pretty_string(node->get_parameter()->value()).c_str());
+
+    truth.set(c.id, *before);
+    break;
+  }
+
+  return 0;
+}
 } // namespace
 
 int main(int argc, char** argv)
 {
   std::string device;
-  bool doWrite = false, doEvents = false;
+  bool doWrite = false, doEvents = false, doTree = false;
   int seconds = 10;
   for(int i = 1; i < argc; ++i)
   {
@@ -262,6 +402,8 @@ int main(int argc, char** argv)
       doWrite = true;
     else if(a == "--events")
       doEvents = true;
+    else if(a == "--tree")
+      doTree = true;
     else if(a == "--seconds" && i + 1 < argc)
       seconds = std::atoi(argv[++i]);
   }
@@ -274,7 +416,13 @@ int main(int argc, char** argv)
   check(controlSlug("gain") == "gain", "slug of 'gain'");
   check(controlSlug("  ") == "control", "slug of a nameless control");
 
-  if(doEvents)
+  if(doTree)
+  {
+    if(device.empty())
+      device = "/dev/video0";
+    runTree(device, argc, argv);
+  }
+  else if(doEvents)
   {
     if(device.empty())
       device = "/dev/video0";

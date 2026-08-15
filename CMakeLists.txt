@@ -111,6 +111,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2InputBackend.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2CaptureNode.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2Controls.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2ControlTree.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2SyncRig.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2GbmAllocator.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2NvBufAllocator.hpp")
@@ -119,6 +120,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2InputBackend.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2CaptureNode.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2Controls.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2ControlTree.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2SyncRig.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2GbmAllocator.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2NvBufAllocator.cpp")
