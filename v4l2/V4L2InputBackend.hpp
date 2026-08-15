@@ -106,6 +106,7 @@ public:
   void start() override;
   void stop() override;
   SyncMembership syncGroup() noexcept override;
+  void setSyncGroupEngaged(bool b) noexcept override { m_syncEngaged = b; }
   bool decoderNeedsExternalImage() const noexcept override { return m_wantExternal; }
   void dropExternalImageRequest() noexcept override { m_wantExternal = false; }
 
@@ -140,6 +141,11 @@ private:
 
   /// Shared with the other devices of the same rig; null when standing alone.
   std::shared_ptr<score::gfx::interop::CaptureCorrelator> m_rig;
+  /// Whether the renderer took us up on the rig, which it only does for a rung
+  /// that can bind a chosen slot. It decides who owns slot lifetime, so the
+  /// capture loop reads it on every frame. Plain: the renderer settles it
+  /// during init(), before start() creates the capture thread.
+  bool m_syncEngaged{};
 
   std::thread m_thread;
   std::atomic<bool> m_running{false};

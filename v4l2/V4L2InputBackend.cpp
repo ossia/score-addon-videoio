@@ -506,6 +506,20 @@ void V4L2InputBackend::offerToRig(int slot, std::uint64_t stampNs)
 
 void V4L2InputBackend::requeueReleasedSlots()
 {
+  // Whoever chooses the slot owns its lifetime. In a rig the renderer binds
+  // what the group hands it and ignores the strategy's own publisher, so the
+  // publisher's idea of "finished with" is one frame ahead of the truth: it
+  // frees a slot as soon as a newer one arrives, which is exactly when the
+  // group has just handed that slot over to be drawn.
+  if(m_syncEngaged && m_rig)
+  {
+    std::uint32_t mask = m_rig->group().takeReturned(m_settings.syncMember);
+    for(std::size_t i = 0; mask != 0u; ++i, mask >>= 1)
+      if(mask & 1u)
+        m_session.requeue(i);
+    return;
+  }
+
   if(!m_gpu)
     return;
   std::uint32_t mask = m_gpu->takeReturnedSlots();
@@ -538,7 +552,12 @@ void V4L2InputBackend::runLoopDmaBuf()
     // From here the slot belongs to the renderer: it samples the buffer in
     // place, so requeueing it now would let the driver overwrite the frame
     // being drawn. It comes back through requeueReleasedSlots().
-    if(!m_gpu->ingestFrame(std::size_t(idx)))
+    //
+    // Grouped, the offer below is the publication and the group is what the
+    // renderer consumes; the strategy's publisher would only shadow it, and
+    // its displacement would give the driver back a slot the group still has
+    // out on loan.
+    if(!m_syncEngaged && !m_gpu->ingestFrame(std::size_t(idx)))
     {
       m_session.requeue(std::size_t(idx));
       continue;
