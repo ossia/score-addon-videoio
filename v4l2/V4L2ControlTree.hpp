@@ -14,6 +14,16 @@
  * and ranges moving underneath -- an Orin NX bounds `exposure` by `frame_rate`,
  * so setting one silently reshapes the other. Without that the explorer would
  * show a value the hardware stopped holding.
+ *
+ * Two rules the implementation exists to obey:
+ *
+ *  - **Never push into a parameter from inside that parameter's callback.**
+ *    `callback_container::send` holds a non-recursive mutex while it runs
+ *    callbacks, so a corrective push made inline deadlocks the calling thread
+ *    -- the GUI, in practice. Corrections are posted to the Qt thread instead.
+ *  - **Writes can arrive on any thread.** The explorer, OSC and the execution
+ *    engine all reach a parameter, while driver events arrive on the Qt thread,
+ *    so every touch of the ControlSet is serialised.
  */
 
 #include <v4l2/V4L2Controls.hpp>
@@ -22,11 +32,17 @@
 #include <ossia/network/base/node.hpp>
 #include <ossia/network/base/parameter.hpp>
 
+#include <QObject>
+
 #include <score_addon_videoio_export.h>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 class QSocketNotifier;
@@ -48,22 +64,36 @@ public:
 
   /// False when the device could not be opened; the tree is then empty and the
   /// camera still streams, since controls are not required for capture.
-  bool valid() const noexcept { return m_set.isOpen(); }
+  bool valid() const noexcept { return m_open; }
 
-  std::size_t count() const noexcept { return m_set.controls().size(); }
+  std::size_t count() const noexcept { return m_params.size(); }
 
 private:
   void build(ossia::net::device_base& dev, ossia::net::node_base& parent,
              const std::string& group);
+  void write(std::uint32_t id, const ossia::value& v);
+  void drainEvents();
+  void applyEvent(const ControlSet::Event& e);
+  void publish(std::uint32_t id, std::int64_t raw);
   ossia::net::parameter_base* paramFor(std::uint32_t id) const noexcept;
-  void onDriverEvent(const ControlSet::Event& e);
 
+  /// Serialises every ControlSet touch: writes arrive on the caller's thread,
+  /// events on the Qt thread.
+  mutable std::mutex m_deviceLock;
   ControlSet m_set;
-  std::vector<ossia::net::parameter_base*> m_params;
+  bool m_open{};
 
-  /// Set while pushing a driver-sourced value into a parameter, so the
-  /// parameter's own callback does not write it straight back to the driver.
-  std::shared_ptr<bool> m_echo;
+  /// Fixed after build(), so it is readable without the lock.
+  std::vector<std::pair<std::uint32_t, ossia::net::parameter_base*>> m_params;
+
+  /// The thread currently pushing a driver-sourced value, so that thread's
+  /// re-entrant callback can tell "this came from the hardware" from "a user
+  /// wrote this". A plain flag would also silence a genuine write arriving on
+  /// another thread at the same moment.
+  std::atomic<std::thread::id> m_echoing{};
+
+  /// Owns the queued corrections, and cancels the pending ones when destroyed.
+  QObject m_context;
 
   std::unique_ptr<QSocketNotifier> m_notifier;
 };

@@ -5,9 +5,13 @@
 #include <ossia/network/common/complex_type.hpp>
 #include <ossia/network/domain/domain.hpp>
 
+#include <ossia-qt/invoke.hpp>
+
 #include <QSocketNotifier>
 
 #include <algorithm>
+#include <mutex>
+#include <thread>
 
 namespace Gfx::V4L2
 {
@@ -193,10 +197,10 @@ std::string descriptionFor(const ControlDesc& c)
 ControlTree::ControlTree(
     const std::string& devicePath, ossia::net::device_base& dev,
     ossia::net::node_base& parent, std::string group)
-    : m_echo{std::make_shared<bool>(false)}
 {
   if(!m_set.open(devicePath))
     return;
+  m_open = true;
 
   build(dev, parent, group);
 
@@ -205,21 +209,31 @@ ControlTree::ControlTree(
     // V4L2 signals control changes as a priority condition on the fd, which is
     // what QSocketNotifier calls an Exception. Watching the fd rather than
     // polling means an external `v4l2-ctl` shows up immediately and an idle
-    // camera costs nothing.
+    // camera costs nothing. Measured on both drivers: an idle control fd polls
+    // clean, so this does not spin.
     m_notifier
         = std::make_unique<QSocketNotifier>(m_set.fd(), QSocketNotifier::Exception);
     QObject::connect(
         m_notifier.get(), &QSocketNotifier::activated, m_notifier.get(),
-        [this] { m_set.pollEvents([this](const ControlSet::Event& e) { onDriverEvent(e); }); });
+        [this] { drainEvents(); });
     m_notifier->setEnabled(true);
 
     // Drain the initial burst: subscribing asks for one event per control, and
     // those carry the values the tree was just built from.
+    std::lock_guard lk{m_deviceLock};
     m_set.pollEvents([](const ControlSet::Event&) { });
   }
 }
 
 ControlTree::~ControlTree() = default;
+
+ossia::net::parameter_base* ControlTree::paramFor(std::uint32_t id) const noexcept
+{
+  for(const auto& [pid, param] : m_params)
+    if(pid == id)
+      return param;
+  return nullptr;
+}
 
 void ControlTree::build(
     ossia::net::device_base& dev, ossia::net::node_base& parent,
@@ -229,11 +243,11 @@ void ControlTree::build(
 
   std::vector<Gfx::TreeControl> tcs;
   tcs.reserve(ctrls.size());
+  std::vector<std::uint32_t> ids;
+  ids.reserve(ctrls.size());
 
-  for(std::size_t i = 0; i < ctrls.size(); ++i)
+  for(const auto& c : ctrls)
   {
-    const auto& c = ctrls[i];
-
     Gfx::TreeControl t;
     t.name = c.slug;
     t.description = descriptionFor(c);
@@ -255,74 +269,123 @@ void ControlTree::build(
     if(!c.readOnly)
     {
       const auto id = c.id;
-      t.onSet = [this, id](const ossia::value& v) {
-        if(*m_echo)
-          return;
-        const auto* d = m_set.find(id);
-        if(!d)
-          return;
-
-        if(d->kind == ControlKind::String)
-        {
-          if(auto s = v.target<std::string>())
-            m_set.setString(id, *s);
-          return;
-        }
-
-        const auto raw = driverValue(*d, v);
-        if(!raw)
-          return;
-
-        const auto r = m_set.set(id, *raw);
-        if(!r.ok)
-          return;
-
-        // The driver rounds to `step` and clamps; publish what it took rather
-        // than what was asked, or the tree and the hardware disagree silently.
-        if(r.value != *raw)
-          if(auto* p = paramFor(id))
-          {
-            *m_echo = true;
-            p->push_value(publishedValue(*d, r.value));
-            *m_echo = false;
-          }
-      };
+      t.onSet = [this, id](const ossia::value& v) { write(id, v); };
     }
 
+    ids.push_back(c.id);
     tcs.push_back(std::move(t));
   }
 
-  m_params = Gfx::addControlGroup(dev, parent, group, tcs);
+  auto params = Gfx::addControlGroup(dev, parent, group, tcs);
+  for(std::size_t i = 0; i < ids.size() && i < params.size(); ++i)
+    if(params[i])
+      m_params.emplace_back(ids[i], params[i]);
 }
 
-ossia::net::parameter_base* ControlTree::paramFor(std::uint32_t id) const noexcept
+void ControlTree::write(std::uint32_t id, const ossia::value& v)
 {
-  const auto& ctrls = m_set.controls();
-  for(std::size_t i = 0; i < ctrls.size() && i < m_params.size(); ++i)
-    if(ctrls[i].id == id)
-      return m_params[i];
-  return nullptr;
-}
-
-void ControlTree::onDriverEvent(const ControlSet::Event& e)
-{
-  const auto* d = m_set.find(e.id);
-  auto* p = paramFor(e.id);
-  if(!d || !p)
+  // Our own push, re-entering this callback: the hardware already holds this.
+  if(m_echoing.load(std::memory_order_acquire) == std::this_thread::get_id())
     return;
+
+  ControlDesc desc;
+  ControlWriteResult r;
+  std::int64_t asked{};
+  {
+    std::lock_guard lk{m_deviceLock};
+    const auto* d = m_set.find(id);
+    if(!d)
+      return;
+    desc = *d;
+
+    if(desc.kind == ControlKind::String)
+    {
+      if(auto s = v.target<std::string>())
+        m_set.setString(id, *s);
+      return;
+    }
+
+    const auto raw = driverValue(desc, v);
+    if(!raw)
+      return;
+    asked = *raw;
+    r = m_set.set(id, asked);
+  }
+
+  if(!r.ok || r.value == asked)
+    return;
+
+  // The driver rounded or clamped, so the tree is now showing something the
+  // hardware does not hold. Correcting it inline would call push_value from
+  // inside this very parameter's callback, and callback_container::send holds
+  // a non-recursive mutex across that call -- which deadlocks whichever thread
+  // wrote, the GUI included. Post it instead.
+  ossia::qt::run_async(
+      &m_context, [this, id, value = r.value] { publish(id, value); });
+}
+
+void ControlTree::publish(std::uint32_t id, std::int64_t raw)
+{
+  auto* param = paramFor(id);
+  if(!param)
+    return;
+
+  ControlDesc desc;
+  {
+    std::lock_guard lk{m_deviceLock};
+    const auto* d = m_set.find(id);
+    if(!d)
+      return;
+    desc = *d;
+  }
+
+  m_echoing.store(std::this_thread::get_id(), std::memory_order_release);
+  param->push_value(publishedValue(desc, raw));
+  m_echoing.store(std::thread::id{}, std::memory_order_release);
+}
+
+void ControlTree::drainEvents()
+{
+  // Collected under the lock, applied outside it: applying pushes into
+  // parameters, whose callbacks come straight back here to write the driver.
+  std::vector<ControlSet::Event> events;
+  {
+    std::lock_guard lk{m_deviceLock};
+    m_set.pollEvents([&](const ControlSet::Event& e) { events.push_back(e); });
+  }
+
+  for(const auto& e : events)
+    applyEvent(e);
+}
+
+void ControlTree::applyEvent(const ControlSet::Event& e)
+{
+  auto* param = paramFor(e.id);
+  if(!param)
+    return;
+
+  ControlDesc desc;
+  {
+    std::lock_guard lk{m_deviceLock};
+    const auto* d = m_set.find(e.id);
+    if(!d)
+      return;
+    desc = *d;
+  }
 
   // An inactive control is one the hardware will not accept writes for until
   // something else changes -- auto-white-balance holding its temperature, for
   // instance. Reflecting that as read-only is the closest the tree can say.
-  p->set_access(d->inactive || d->readOnly ? ossia::access_mode::GET
-                                           : ossia::access_mode::BI);
+  param->set_access(
+      desc.inactive || desc.readOnly ? ossia::access_mode::GET
+                                     : ossia::access_mode::BI);
 
   if(e.rangeChanged)
-    p->set_domain(domainFor(*d));
+    param->set_domain(domainFor(desc));
 
-  *m_echo = true;
-  p->push_value(publishedValue(*d, e.value));
-  *m_echo = false;
+  m_echoing.store(std::this_thread::get_id(), std::memory_order_release);
+  param->push_value(publishedValue(desc, e.value));
+  m_echoing.store(std::thread::id{}, std::memory_order_release);
 }
 
 } // namespace Gfx::V4L2

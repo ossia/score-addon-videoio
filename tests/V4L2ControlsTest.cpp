@@ -26,6 +26,8 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
+#include <thread>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -329,8 +331,20 @@ int runTree(const std::string& path, int argc, char** argv)
         c.slug + ": hardware unreadable after a tree write");
     if(after)
     {
-      // Not equality with `target`: the driver rounds to step. What must hold
-      // is that the hardware moved to where the tree now claims it is.
+      // A correction is posted to the event loop rather than pushed inline --
+      // pushing inline would re-enter the parameter's own callback and
+      // deadlock -- so converge before judging.
+      for(int i = 0; i < 100; ++i)
+      {
+        app.processEvents();
+        if(ossia::convert<int>(node->get_parameter()->value()) == int(*after))
+          break;
+        ::usleep(5000);
+      }
+
+      // Not equality with `target`: the driver rounds to step, and may refuse
+      // the write entirely -- a BRIO reports success for `gain` and keeps 0.
+      // What must hold is that the tree ends up showing what the hardware has.
       const auto shown = node->get_parameter()->value();
       check(
           ossia::convert<int>(shown) == int(*after),
@@ -338,7 +352,6 @@ int runTree(const std::string& path, int argc, char** argv)
               + " but hardware holds " + std::to_string(*after));
     }
     truth.set(c.id, *before);
-    break;
   }
 
   // --- a change made behind the tree's back must come home -----------------
@@ -386,12 +399,87 @@ int runTree(const std::string& path, int argc, char** argv)
 
   return 0;
 }
+
+/// Hammers the tree from a second thread while driver events land on the Qt
+/// thread. The explorer is not the only writer -- OSC and the execution engine
+/// reach a parameter too -- so the ControlSet is touched concurrently, and a
+/// missing lock here shows up as a crash or a wedged run rather than a wrong
+/// value.
+int runStress(const std::string& path, int argc, char** argv, int seconds)
+{
+  QCoreApplication app{argc, argv};
+
+  ossia::net::generic_device dev{
+      std::make_unique<ossia::net::multiplex_protocol>(), "cam"};
+  ControlTree tree{path, dev, dev.get_root_node()};
+  if(!tree.valid())
+  {
+    std::printf("%s: cannot open\n", path.c_str());
+    return 1;
+  }
+
+  ControlSet truth;
+  truth.open(path);
+
+  std::vector<std::pair<ossia::net::parameter_base*, ControlDesc>> targets;
+  for(const auto& c : truth.controls())
+  {
+    if(c.readOnly || c.executeOnWrite || c.kind != ControlKind::Integer)
+      continue;
+    auto* n = ossia::net::find_node(dev.get_root_node(), "/controls/" + c.slug);
+    if(n && n->get_parameter())
+      targets.emplace_back(n->get_parameter(), c);
+  }
+  if(targets.empty())
+  {
+    std::printf("%s: nothing writable to stress\n", path.c_str());
+    return 0;
+  }
+  std::printf("%s: stressing %zu controls for %ds\n", path.c_str(), targets.size(),
+              seconds);
+
+  std::atomic_bool stop{false};
+  std::atomic_int writes{0};
+  std::thread writer{[&] {
+    int i = 0;
+    while(!stop.load())
+    {
+      auto& [p, c] = targets[i++ % targets.size()];
+      const auto span = c.max - c.min;
+      p->push_value(int(c.min + (i * 7) % (span > 0 ? span : 1)));
+      ++writes;
+      ::usleep(1000);
+    }
+  }};
+
+  const auto deadline = seconds * 100;
+  for(int i = 0; i < deadline; ++i)
+  {
+    app.processEvents();
+    ::usleep(10000);
+  }
+  stop = true;
+  writer.join();
+
+  // Getting here at all is the result: no deadlock, no crash, no wedge.
+  std::printf("  survived %d concurrent writes\n", writes.load());
+  check(writes.load() > 0, "the writer thread never ran");
+
+  // And the tree must still be coherent afterwards.
+  app.processEvents();
+  for(auto& [p, c] : targets)
+  {
+    const auto hw = truth.get(c.id);
+    check(hw.has_value(), c.slug + ": unreadable after the stress");
+  }
+  return 0;
+}
 } // namespace
 
 int main(int argc, char** argv)
 {
   std::string device;
-  bool doWrite = false, doEvents = false, doTree = false;
+  bool doWrite = false, doEvents = false, doTree = false, doStress = false;
   int seconds = 10;
   for(int i = 1; i < argc; ++i)
   {
@@ -402,6 +490,8 @@ int main(int argc, char** argv)
       doWrite = true;
     else if(a == "--events")
       doEvents = true;
+    else if(a == "--stress")
+      doStress = true;
     else if(a == "--tree")
       doTree = true;
     else if(a == "--seconds" && i + 1 < argc)
@@ -416,7 +506,13 @@ int main(int argc, char** argv)
   check(controlSlug("gain") == "gain", "slug of 'gain'");
   check(controlSlug("  ") == "control", "slug of a nameless control");
 
-  if(doTree)
+  if(doStress)
+  {
+    if(device.empty())
+      device = "/dev/video0";
+    runStress(device, argc, argv, seconds > 0 ? seconds : 5);
+  }
+  else if(doTree)
   {
     if(device.empty())
       device = "/dev/video0";
