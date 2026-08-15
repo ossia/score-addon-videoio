@@ -121,6 +121,30 @@ EGLDisplay eglDisplayForArgus()
   return dpy;
 }
 
+/// This buffer's sensor start-of-frame on the Tegra-wide TSC -- the same
+/// counter the V4L2 buffer stamps and cntvct_el0 use, so capture, render and
+/// any external reference compare without conversion.
+///
+/// Deliberately NOT falling back to ICaptureMetadata::getSensorTimestamp():
+/// they are different clock domains, and a skew computed across the two would
+/// be a plausible-looking fiction. Zero means "no stamp", which the sync group
+/// already skips.
+std::uint64_t sofTscOf(IBuffer* buf)
+{
+#if defined(SCORE_ARGUS_HAS_TSC_TIMESTAMP)
+  if(!buf)
+    return 0;
+  const auto* md = buf->getMetadata();
+  if(!md)
+    return 0;
+  if(auto* iTsc = interface_cast<const Ext::ISensorTimestampTsc>(md))
+    return iTsc->getSensorSofTimestampTsc();
+#else
+  (void)buf;
+#endif
+  return 0;
+}
+
 /// Write one NV12 frame to disk, plus a sidecar describing its layout.
 ///
 /// Gated on SCORE_ARGUS_DUMP because it costs a full-frame write. It exists
@@ -800,7 +824,6 @@ bool ArgusSession::start(
                            takeReturned = std::move(takeReturned)] {
     while(d->running.load(std::memory_order_acquire))
     {
-      IBuffer* bufStream0 = nullptr;
       // One capture delivers one buffer per stream. Acquire them all before
       // publishing anything: half a capture must never be visible downstream,
       // which is the whole reason the renderer can trust the set it is given.
@@ -808,6 +831,7 @@ bool ArgusSession::start(
       std::size_t slotIdx[kMaxSyncSensors]{};
       std::uint64_t stamps[kMaxSyncSensors]{};
       Buffer* acquired[kMaxSyncSensors]{};
+      IBuffer* ibufs[kMaxSyncSensors]{};
       std::size_t got = 0;
       bool endOfStream = false;
       for(std::size_t si = 0; si < ns && si < kMaxSyncSensors; ++si)
@@ -829,8 +853,7 @@ bool ArgusSession::start(
         slotIdx[si] = ib ? std::size_t(reinterpret_cast<std::uintptr_t>(
                                ib->getClientData()))
                          : std::size_t(0);
-        if(si == 0)
-          bufStream0 = ib;
+        ibufs[si] = ib;
       }
       if(got != ns)
       {
@@ -844,8 +867,13 @@ bool ArgusSession::start(
         continue;
       }
 
-      auto* iBuf = bufStream0;
-      std::uint64_t sofTsc = 0;
+      // Every sensor's own start-of-frame, not just the first: the whole point
+      // of a synchronised rig is being able to state the skew that actually
+      // occurred, and one stamp repeated for all of them always reads as zero.
+      for(std::size_t si = 0; si < ns && si < kMaxSyncSensors; ++si)
+        stamps[si] = sofTscOf(ibufs[si]);
+
+      auto* iBuf = ibufs[0];
       const auto slot = slotIdx[0];
 
       // Sensor start-of-frame -> here. Measured before publishing so it is the
@@ -858,17 +886,6 @@ bool ArgusSession::start(
           if(auto* iMd = interface_cast<const ICaptureMetadata>(md))
           {
             const auto sensorNs = iMd->getSensorTimestamp();
-#if defined(SCORE_ARGUS_HAS_TSC_TIMESTAMP)
-            // The VI hardware start-of-frame on the Tegra-wide TSC -- the same
-            // counter the V4L2 buffer stamps and cntvct_el0 use, so capture,
-            // render and any external reference compare without conversion.
-            // Deliberately NOT falling back to sensorNs when this is
-            // unavailable: they are different clock domains, and a skew computed
-            // across the two would be a plausible-looking fiction. Zero means
-            // "no stamp", which the sync group already skips.
-            if(auto* iTsc = interface_cast<const Ext::ISensorTimestampTsc>(md))
-              sofTsc = iTsc->getSensorSofTimestampTsc();
-#endif
             timespec ts{};
             clock_gettime(CLOCK_MONOTONIC, &ts);
             const auto nowNs
@@ -912,10 +929,7 @@ bool ArgusSession::start(
       }
 
       if(onFrame)
-      {
-        stamps[0] = sofTsc;
         onFrame(slotIdx, stamps, ns);
-      }
 
       // Periodic, not per-frame: at 60 fps a per-frame line is its own
       // performance problem, and the comparison against gst wants a stable
