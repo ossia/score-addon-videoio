@@ -18,6 +18,11 @@ class QComboBox;
 class QFormLayout;
 class QLineEdit;
 
+namespace Gfx
+{
+class CaptureControlTree;
+}
+
 namespace Gfx::V4L2
 {
 class ControlTree;
@@ -92,6 +97,10 @@ private:
   /// `<stream>/controls`. Kept here because they must outlive neither more nor
   /// less than the device they describe.
   mutable std::vector<std::unique_ptr<Gfx::V4L2::ControlTree>> m_controls;
+
+  /// The score-side `/render/` group per stream: demosaic corrections and
+  /// viewport fitting, which no driver knows about.
+  mutable std::vector<std::unique_ptr<Gfx::CaptureControlTree>> m_render;
 };
 
 class VideoInputSettingsWidget final : public Device::ProtocolSettingsWidget

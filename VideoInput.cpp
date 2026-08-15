@@ -56,6 +56,8 @@
 
 #if defined(SCORE_HAS_V4L2)
 #include <v4l2/V4L2CaptureNode.hpp>
+#include <Gfx/CaptureControlTree.hpp>
+
 #include <v4l2/V4L2ControlTree.hpp>
 #include <v4l2/V4L2Session.hpp>
 #endif
@@ -251,6 +253,7 @@ void VideoInputDevice::disconnect()
   // nodes and a socket notifier that can fire at any time, so outliving the
   // device by even one event means pushing into freed memory.
   m_controls.clear();
+  m_render.clear();
   auto prev = std::move(m_dev);
   m_dev = {};
   deviceChanged(prev.get(), nullptr);
@@ -415,9 +418,9 @@ bool VideoInputDevice::reconnect()
             member.syncMember = std::size_t(i);
             member.syncMembers = std::size_t(paths.size());
 
+            auto* node = new Gfx::V4L2::V4L2CaptureNode{member};
             auto* streamNode = dev->add_stream(
-                new Gfx::V4L2::V4L2CaptureNode{member}, &plug->exec,
-                QString("cam%1").arg(i).toStdString());
+                node, &plug->exec, QString("cam%1").arg(i).toStdString());
 
             // Each sensor carries its own controls: on a rig the two are
             // separate devices with separate exposures, and a single shared
@@ -428,6 +431,11 @@ bool VideoInputDevice::reconnect()
                   member.device, *dev, *streamNode);
               if(ctl->valid())
                 m_controls.push_back(std::move(ctl));
+
+              // Declared by us, next to the driver's own: the demosaic
+              // corrections and how the frame is fitted.
+              m_render.push_back(std::make_unique<Gfx::CaptureControlTree>(
+                  node->adjustments(), *dev, *streamNode));
             }
           }
 
@@ -446,9 +454,12 @@ bool VideoInputDevice::reconnect()
           return connected();
         }
 
-        registerGpuDirect(new Gfx::V4L2::V4L2CaptureNode{v4l2});
+        auto* v4l2Node = new Gfx::V4L2::V4L2CaptureNode{v4l2};
+        registerGpuDirect(v4l2Node);
         if(m_dev)
         {
+          m_render.push_back(std::make_unique<Gfx::CaptureControlTree>(
+              v4l2Node->adjustments(), *m_dev, m_dev->get_root_node()));
           auto ctl = std::make_unique<Gfx::V4L2::ControlTree>(
               v4l2.device, *m_dev, m_dev->get_root_node());
           if(ctl->valid())
