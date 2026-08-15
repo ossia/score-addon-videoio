@@ -150,9 +150,14 @@ void ControlSet::enumerate()
     if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_QUERY_EXT_CTRL, &q) != 0)
       break;
     // A driver that answers NEXT_CTRL with an id that does not advance would
-    // spin this loop forever. Enumeration is strictly increasing by contract,
-    // so treat a repeat as the end rather than trusting it.
-    if(q.id <= id && !m_controls.empty())
+    // spin this loop forever, at device-creation time. Enumeration is strictly
+    // increasing by contract, so treat a repeat as the end rather than trusting
+    // it. No "have we stored one yet" clause: control ids are never zero and
+    // `id` starts at zero, so the first iteration always advances -- and such a
+    // clause would disable the guard in the one case it is for, a driver whose
+    // opening entries are all skipped (control classes, disabled, payloads) and
+    // which then repeats.
+    if(q.id <= id)
       break;
     id = q.id;
 
