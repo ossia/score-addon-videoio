@@ -106,6 +106,8 @@ public:
   void start() override;
   void stop() override;
   SyncMembership syncGroup() noexcept override;
+  bool decoderNeedsExternalImage() const noexcept override { return m_wantExternal; }
+  void dropExternalImageRequest() noexcept override { m_wantExternal = false; }
 
 private:
   /// Offer a just-ingested slot to the rig, and requeue whatever the rig hands
