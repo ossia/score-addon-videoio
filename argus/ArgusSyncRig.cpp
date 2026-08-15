@@ -1,6 +1,7 @@
 #include "ArgusSyncRig.hpp"
 
 #include <QDebug>
+#include <QString>
 
 #include <map>
 
@@ -250,7 +251,42 @@ void ArgusRig::onSharedCapture(
   // sets no one reads -- and the group would then own slots it can never be
   // asked to release.
   if(anyGrouped)
+  {
     m_correlator.group().publish(setSlots, setStamps);
+    reportIfIncomplete(setSlots, n);
+  }
+}
+
+void ArgusRig::reportIfIncomplete(const int* setSlots, std::size_t n)
+{
+  bool complete = true;
+  for(std::size_t m = 0; m < m_members && complete; ++m)
+    complete = setSlots[m] >= 0;
+
+  if(complete)
+  {
+    m_incompleteRun.store(0, std::memory_order_relaxed);
+    return;
+  }
+
+  // Only complete sets are handed out, so one member missing holds the whole
+  // rig on its last frame. At startup that is just the other renderers not
+  // having settled yet and it clears itself within a second; sustained, it is a
+  // child nobody connected -- which otherwise presents as a picture that froze
+  // for no visible reason.
+  const auto run = m_incompleteRun.fetch_add(1, std::memory_order_relaxed) + 1;
+  if(run != kIncompleteRunWarn)
+    return;
+
+  QString missing;
+  for(std::size_t m = 0; m < m_members; ++m)
+    if(m >= n || setSlots[m] < 0)
+      missing += (missing.isEmpty() ? "" : ", ") + QString("cam%1").arg(int(m));
+  qWarning() << "Argus rig" << m_name.c_str() << ": holding on"
+             << missing.toUtf8().constData()
+             << "-- nothing is rendering them, so the rig has no complete "
+                "capture to hand out. Connect every child, or use one device "
+                "per sensor if they do not need to be synchronised.";
 }
 
 void ArgusRig::onSoloCapture(
@@ -273,8 +309,26 @@ void ArgusRig::onSoloCapture(
   // Separate sessions arrive on separate threads, so the set is assembled from
   // arrivals; the offer that completes a row publishes it.
   const int displaced = m_correlator.offer(member, int(slot), stamp);
-  if(displaced >= 0)
-    returnUnused(member, std::size_t(displaced));
+  if(displaced < 0)
+  {
+    m_incompleteRun.store(0, std::memory_order_relaxed);
+    return;
+  }
+
+  // Displacing our own previous offer means it never found a partner. Once in a
+  // while that is a dropped frame; every capture in a row is a member nobody is
+  // rendering, and the rig then holds every other member on its last frame.
+  returnUnused(member, std::size_t(displaced));
+  if(m_incompleteRun.fetch_add(1, std::memory_order_relaxed) + 1
+     == kIncompleteRunWarn)
+  {
+    qWarning() << "Argus rig" << m_name.c_str() << ": member" << int(member)
+               << "has displaced its own offer" << int(kIncompleteRunWarn)
+               << "times running -- its partners are not delivering, so the "
+                  "rig has no complete capture to hand out. Connect every "
+                  "child, or use one device per sensor if they do not need to "
+                  "be synchronised.";
+  }
 }
 
 std::uint32_t ArgusRig::takeReturnedFor(std::size_t member)

@@ -111,6 +111,15 @@ private:
   std::uint32_t takeReturnedFor(std::size_t member);
   /// Hand a slot back to the ISP without the renderer ever seeing it.
   void returnUnused(std::size_t member, std::size_t slot);
+  /// Capture thread. Say so, once, when the rig has been stuck on a member for
+  /// long enough that it is not the other renderers still settling.
+  void reportIfIncomplete(const int* setSlots, std::size_t n);
+
+  /// Captures in a row that could not make a complete set. Four seconds at 30
+  /// fps: long enough that a renderer still initialising has finished, short
+  /// enough that nobody sits in front of a frozen picture wondering.
+  static constexpr std::uint32_t kIncompleteRunWarn = 120;
+  std::atomic<std::uint32_t> m_incompleteRun{0};
 
   const std::string m_name;
   const std::size_t m_members;
