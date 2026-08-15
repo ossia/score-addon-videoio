@@ -110,6 +110,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2CpuCapture.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2InputBackend.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2CaptureNode.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2Controls.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2SyncRig.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2GbmAllocator.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2NvBufAllocator.hpp")
@@ -117,6 +118,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2Session.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2InputBackend.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2CaptureNode.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2Controls.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2SyncRig.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2GbmAllocator.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2NvBufAllocator.cpp")
@@ -620,5 +622,19 @@ if(SCORE_VIDEOIO_BUILD_TESTS AND VIDEOIO_HAS_V4L2)
     ${QT_PREFIX}::Core ${QT_PREFIX}::Gui ${QT_PREFIX}::Widgets)
   if(SCORE_STATIC_PLUGINS)
     target_link_libraries(V4L2CaptureTest PRIVATE ${SCORE_PLUGINS_LIST})
+  endif()
+
+  # Controls need no GPU, no display and no streaming: they run against
+  # whatever cameras the machine has.
+  add_executable(V4L2ControlsTest tests/V4L2ControlsTest.cpp)
+  target_include_directories(V4L2ControlsTest PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_BINARY_DIR}"
+    ${VIDEOIO_INCS})
+  target_link_libraries(V4L2ControlsTest PRIVATE
+    ${PROJECT_NAME}
+    ${QT_PREFIX}::Core ${QT_PREFIX}::Gui ${QT_PREFIX}::Widgets)
+  if(SCORE_STATIC_PLUGINS)
+    target_link_libraries(V4L2ControlsTest PRIVATE ${SCORE_PLUGINS_LIST})
   endif()
 endif()
