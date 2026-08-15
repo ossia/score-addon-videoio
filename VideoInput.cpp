@@ -1257,6 +1257,41 @@ public:
 };
 #endif
 
+#if defined(SCORE_HAS_ARGUS)
+class ArgusVideoInputEnumerator final : public Device::DeviceEnumerator
+{
+public:
+  void enumerate(
+      std::function<void(const QString&, const Device::DeviceSettings&)> func)
+      const override
+  {
+    // Nothing to offer without a provider: on a Tegra whose daemon is down
+    // every sensor would be listed and none would open.
+    if(!Gfx::Argus::argusAvailable())
+      return;
+
+    for(const auto& cam : Gfx::Argus::argusCameras())
+    {
+      Device::DeviceSettings s;
+      // The model repeats across sensors of the same rig, so the index has to
+      // be part of the label or the two are indistinguishable in the list.
+      s.name = QString("%1 (sensor %2)")
+                   .arg(QString::fromStdString(cam.model))
+                   .arg(cam.index);
+      s.protocol = VideoInputProtocolFactory::static_concreteKey();
+      VideoInputSettings set;
+      set.vendor = Vendor::Argus;
+      // An Argus sensor is addressed by provider index; it has no device node,
+      // so devicePath stays empty and deviceIndex carries the identity.
+      set.deviceIndex = int(cam.index);
+      set.deviceName = s.name;
+      s.deviceSpecificSettings = QVariant::fromValue(set);
+      func(s.name, s);
+    }
+  }
+};
+#endif
+
 #if defined(SCORE_HAS_MAGEWELL)
 class MagewellVideoInputEnumerator final : public Device::DeviceEnumerator
 {
@@ -1306,6 +1341,9 @@ VideoInputProtocolFactory::getEnumerators(const score::DocumentContext&) const
 #endif
 #if defined(SCORE_HAS_V4L2)
   e.push_back({"V4L2", new V4L2VideoInputEnumerator});
+#endif
+#if defined(SCORE_HAS_ARGUS)
+  e.push_back({"NVIDIA Argus", new ArgusVideoInputEnumerator});
 #endif
   return e;
 }
