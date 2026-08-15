@@ -16,6 +16,7 @@
 #include <ossia/network/generic/generic_device.hpp>
 
 #include <QCheckBox>
+#include <QVBoxLayout>
 #include <QComboBox>
 
 #include <algorithm>
@@ -623,17 +624,26 @@ VideoInputSettingsWidget::VideoInputSettingsWidget(QWidget* parent)
 #if defined(SCORE_HAS_MAGEWELL)
   m_vendorCombo->addItem("Magewell", static_cast<int>(Vendor::Magewell));
 #endif
+#if defined(SCORE_HAS_ARGUS)
+  // Only where a provider actually answers: on a Tegra with the daemon down
+  // every Argus device would fail to open, and offering the vendor anyway
+  // sends the user hunting a configuration problem in score.
+  if(Gfx::Argus::argusAvailable())
+    m_vendorCombo->addItem("NVIDIA Argus (Tegra ISP)", static_cast<int>(Vendor::Argus));
+#endif
   m_layout->addRow(tr("Vendor"), m_vendorCombo);
 
   m_deviceCombo = new QComboBox{this};
   m_layout->addRow(tr("Device"), m_deviceCombo);
 
-  m_rigPathsEdit = new QLineEdit{this};
-  m_rigPathsEdit->setPlaceholderText(
-      QObject::tr("e.g. /dev/video1, or 1 for an Argus sensor id -- leave "
-                  "empty for a single camera"));
-  m_layout->addRow(tr("Rig: other cameras"), m_rigPathsEdit);
-  this->checkForChanges(m_rigPathsEdit);
+  // The other cameras this one is frame-locked to. A list of checkboxes rather
+  // than a text field because the only valid entries are devices that exist,
+  // of this same vendor -- which the widget knows and the user should not have
+  // to spell.
+  m_rigWidget = new QWidget{this};
+  m_rigLayout = new QVBoxLayout{m_rigWidget};
+  m_rigLayout->setContentsMargins(0, 0, 0, 0);
+  m_layout->addRow(tr("Frame-locked with"), m_rigWidget);
 
   m_channelCombo = new QComboBox{this};
   for(int i = 1; i <= 8; ++i)
@@ -667,10 +677,17 @@ VideoInputSettingsWidget::VideoInputSettingsWidget(QWidget* parent)
       [this](int) { onVendorChanged(); });
   connect(
       m_deviceCombo, qOverload<int>(&QComboBox::currentIndexChanged), this,
-      [this](int) { updateFormatList(); });
+      [this](int) {
+        updateFormatList();
+        refreshRigList();
+      });
 
   onVendorChanged();
 }
+
+/// Whether a rig -- several sensors driven as one frame-locked capture -- is
+/// even a notion for this vendor. Defined below, next to the list it gates.
+static bool vendorSupportsRig(Vendor v) noexcept;
 
 Vendor VideoInputSettingsWidget::currentVendor() const
 {
@@ -756,6 +773,7 @@ void VideoInputSettingsWidget::onVendorChanged()
 
   refreshDeviceList();
   updateFormatList();
+  refreshRigList();
 }
 
 void VideoInputSettingsWidget::refreshDeviceList()
@@ -827,8 +845,134 @@ void VideoInputSettingsWidget::refreshDeviceList()
             QString::fromStdString(dev.displayName), dev.index);
   }
 #endif
+#if defined(SCORE_HAS_ARGUS)
+  else if(vendor == Vendor::Argus)
+  {
+    // The provider's own index is the identity; there is no device node to
+    // address a Tegra sensor by.
+    for(const auto& cam : Gfx::Argus::argusCameras())
+      m_deviceCombo->addItem(
+          QString("%1 (sensor %2)")
+              .arg(QString::fromStdString(cam.model))
+              .arg(cam.index),
+          int(cam.index));
+  }
+#endif
   if(m_deviceCombo->count() == 0)
     m_deviceCombo->addItem(tr("(no device detected)"), -1);
+}
+
+static bool vendorSupportsRig(Vendor v) noexcept
+{
+  // A rig means several sensors driven from one capture, so its members share a
+  // driver and a clock. The SDI cards address several inputs through one board
+  // rather than several devices, and nothing frame-locks a V4L2 camera to an
+  // AJA card, so the notion only applies to these two.
+  return v == Vendor::V4L2 || v == Vendor::Argus;
+}
+
+QStringList VideoInputSettingsWidget::selectedRigMembers() const
+{
+  QStringList out;
+  for(auto* cb : m_rigChecks)
+    if(cb->isChecked())
+      out.push_back(cb->property("rigToken").toString());
+  return out;
+}
+
+void VideoInputSettingsWidget::refreshRigList(bool adoptShownState)
+{
+  // Rebuilt on every vendor and device change, so by default what is ticked now
+  // carries over -- the user may have just set it. setSettings passes false
+  // because it has a selection from the document that must not be overwritten
+  // by whatever the widget happened to be showing before.
+  if(adoptShownState && !m_rigChecks.empty())
+    m_rigSelection = selectedRigMembers();
+
+  // A token only means anything inside its vendor's namespace: "1" is an Argus
+  // sensor and a nonsense device path, "/dev/video1" the reverse. Carrying a
+  // selection across a vendor change showed the old vendor's members as
+  // "not detected" and left them ticked, so switching vendor and pressing Add
+  // wrote the previous vendor's ids onto the new one.
+  if(currentVendor() != m_rigSelectionVendor)
+    m_rigSelection.clear();
+  m_rigSelectionVendor = currentVendor();
+
+  for(auto* cb : m_rigChecks)
+  {
+    m_rigLayout->removeWidget(cb);
+    delete cb;
+  }
+  m_rigChecks.clear();
+
+  const auto vendor = currentVendor();
+  const bool rigCapable = vendorSupportsRig(vendor);
+  if(auto* l = m_layout->labelForField(m_rigWidget))
+    l->setVisible(rigCapable);
+  m_rigWidget->setVisible(rigCapable);
+  if(!rigCapable)
+    return;
+
+  // The primary device is member 0 of its own rig and must not be offered as a
+  // partner to itself.
+  // V4L2 stores the node path, Argus the sensor index; both render to the same
+  // string the rig tokens use.
+  const QString primary = m_deviceCombo->currentData().toString();
+
+  QStringList offered;
+  auto addCandidate = [&](const QString& label, const QString& token) {
+    if(token.isEmpty() || token == primary)
+      return;
+    auto* cb = new QCheckBox{label, m_rigWidget};
+    cb->setProperty("rigToken", token);
+    cb->setChecked(m_rigSelection.contains(token));
+    m_rigLayout->addWidget(cb);
+    m_rigChecks.push_back(cb);
+    offered.push_back(token);
+    this->checkForChanges(cb);
+  };
+
+#if defined(SCORE_HAS_V4L2)
+  if(vendor == Vendor::V4L2)
+    for(const auto& dev : Gfx::V4L2::enumerateDevices())
+      if(dev.canCapture)
+        addCandidate(
+            QString::fromStdString(dev.card + " (" + dev.path + ")"),
+            QString::fromStdString(dev.path));
+#endif
+#if defined(SCORE_HAS_ARGUS)
+  if(vendor == Vendor::Argus)
+    for(const auto& cam : Gfx::Argus::argusCameras())
+      addCandidate(
+          QString("%1 (sensor %2)")
+              .arg(QString::fromStdString(cam.model))
+              .arg(cam.index),
+          QString::number(cam.index));
+#endif
+
+  // A member that is configured but not plugged in stays on the list, ticked
+  // and named. Dropping it would quietly rewrite the rig the next time the
+  // document was saved on a machine with one camera unplugged.
+  for(const auto& token : m_rigSelection)
+  {
+    if(token == primary || offered.contains(token))
+      continue;
+    auto* cb = new QCheckBox{tr("%1 (not detected)").arg(token), m_rigWidget};
+    cb->setProperty("rigToken", token);
+    cb->setChecked(true);
+    m_rigLayout->addWidget(cb);
+    m_rigChecks.push_back(cb);
+    this->checkForChanges(cb);
+  }
+
+  if(m_rigChecks.empty())
+  {
+    auto* none = new QCheckBox{tr("(no other camera of this vendor)"), m_rigWidget};
+    none->setEnabled(false);
+    none->setProperty("rigToken", QString{});
+    m_rigLayout->addWidget(none);
+    m_rigChecks.push_back(none);
+  }
 }
 
 void VideoInputSettingsWidget::updateFormatList()
@@ -916,7 +1060,7 @@ Device::DeviceSettings VideoInputSettingsWidget::getSettings() const
     set.deviceIndex = std::max(0, devData.toInt());
   }
   set.channelIndex = m_channelCombo->currentData().toInt();
-  set.rigPaths = m_rigPathsEdit->text();
+  set.rigPaths = selectedRigMembers().join(',');
   set.videoFormat = m_formatCombo->currentText();
   set.pixelFormat = m_pixelFormatCombo->currentData().toString();
   set.resolutionMode = m_resolutionModeCombo->currentData().toInt();
@@ -944,7 +1088,14 @@ void VideoInputSettingsWidget::setSettings(const Device::DeviceSettings& s)
   for(int i = 0; i < m_channelCombo->count(); ++i)
     if(m_channelCombo->itemData(i).toInt() == set.channelIndex)
       m_channelCombo->setCurrentIndex(i);
-  m_rigPathsEdit->setText(set.rigPaths);
+  // After the device combo, so the primary is known and excluded from its own
+  // rig; the selection is kept whole even where a member is not plugged in.
+  m_rigSelection = set.rigPaths.split(',', Qt::SkipEmptyParts);
+  for(auto& t : m_rigSelection)
+    t = t.trimmed();
+  m_rigSelection.removeAll(QString{});
+  m_rigSelectionVendor = set.vendor;
+  refreshRigList(false);
   m_formatCombo->setCurrentText(set.videoFormat);
   int pfIdx = m_pixelFormatCombo->findData(set.pixelFormat);
   if(pfIdx >= 0)

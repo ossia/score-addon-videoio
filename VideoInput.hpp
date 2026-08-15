@@ -11,12 +11,15 @@
 #include <memory>
 #include <vector>
 
+#include <QStringList>
+
 #include <verdigris>
 
 class QCheckBox;
 class QComboBox;
 class QFormLayout;
 class QLineEdit;
+class QVBoxLayout;
 
 namespace Gfx
 {
@@ -127,9 +130,30 @@ private:
   void refreshDeviceList();
   void updateFormatList();
 
+  /// Rebuild the rig checkboxes for the vendor and primary device in force.
+  /// @p adoptShownState takes the current tick state as the selection first,
+  /// which is right for a vendor or device change and wrong for setSettings --
+  /// there the document's own list is the one to keep.
+  void refreshRigList(bool adoptShownState = true);
+  /// Tokens the user has picked, whether or not the device is plugged in now.
+  QStringList selectedRigMembers() const;
+
   QFormLayout* m_layout{};
   QLineEdit* m_deviceNameEdit{};
-  QLineEdit* m_rigPathsEdit{};
+
+  /// One checkbox per other camera of the same vendor. A rig shares a driver
+  /// and a clock, so the candidates are never cross-vendor -- an AJA card and
+  /// a V4L2 camera have nothing to synchronise through.
+  QWidget* m_rigWidget{};
+  QVBoxLayout* m_rigLayout{};
+  std::vector<QCheckBox*> m_rigChecks;
+  /// Carried across a rebuild so a saved rig survives being opened on a
+  /// machine where one of its cameras is absent.
+  QStringList m_rigSelection;
+  /// Which vendor's namespace those tokens belong to. Kept because they are not
+  /// portable between vendors, and a stale one must be dropped rather than
+  /// shown as a member that happens not to be plugged in.
+  Vendor m_rigSelectionVendor{Vendor::AJA};
   QComboBox* m_vendorCombo{};
   QComboBox* m_deviceCombo{};
   QComboBox* m_channelCombo{};
