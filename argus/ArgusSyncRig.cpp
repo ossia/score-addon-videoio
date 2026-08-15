@@ -214,7 +214,7 @@ void ArgusRig::onSharedCapture(
 {
   int setSlots[score::gfx::interop::CaptureFrameSet::kMaxMembers];
   std::uint64_t setStamps[score::gfx::interop::CaptureFrameSet::kMaxMembers];
-  bool anyGrouped = false;
+  bool complete = true;
 
   {
     std::lock_guard lock{m_memberLock};
@@ -222,15 +222,15 @@ void ArgusRig::onSharedCapture(
     {
       setSlots[m] = -1;
       setStamps[m] = 0;
-      if(m >= n)
-        continue;
 
-      auto* member = m_member[m];
+      auto* member = m < n ? m_member[m] : nullptr;
       if(!member)
       {
-        // Nothing to render it: a member whose renderer has not settled yet, or
-        // has gone. Its buffer goes straight back or the ISP runs out.
-        returnUnused(m, slots[m]);
+        // A member whose renderer has not settled yet, or has gone. Its buffer
+        // goes straight back or the ISP runs out of memory to write into.
+        complete = false;
+        if(m < n)
+          returnUnused(m, slots[m]);
         continue;
       }
 
@@ -238,37 +238,37 @@ void ArgusRig::onSharedCapture(
       {
         setSlots[m] = int(slots[m]);
         setStamps[m] = stamps[m];
-        anyGrouped = true;
       }
       else
       {
+        // Its renderer reads its own ring and never asks the group, so it
+        // cannot be part of the set -- and the set is then unpublishable.
+        complete = false;
         member->publishUngrouped(slots[m]);
       }
     }
   }
 
-  // With nobody taking slots from the group, publishing would only accumulate
-  // sets no one reads -- and the group would then own slots it can never be
-  // asked to release.
-  if(anyGrouped)
-  {
-    m_correlator.group().publish(setSlots, setStamps);
-    reportIfIncomplete(setSlots, n);
-  }
-}
-
-void ArgusRig::reportIfIncomplete(const int* setSlots, std::size_t n)
-{
-  bool complete = true;
-  for(std::size_t m = 0; m < m_members && complete; ++m)
-    complete = setSlots[m] >= 0;
-
   if(complete)
   {
+    m_correlator.group().publish(setSlots, setStamps);
     m_incompleteRun.store(0, std::memory_order_relaxed);
     return;
   }
 
+  // Publishing a set with a hole in it would be worse than not publishing:
+  // take() only ever serves complete sets, so nothing would bind it, and the
+  // slots it names would be lent to the group with nothing left to release
+  // them. Give them back instead.
+  for(std::size_t m = 0; m < m_members; ++m)
+    if(setSlots[m] >= 0)
+      returnUnused(m, std::size_t(setSlots[m]));
+
+  warnIncomplete(setSlots, n);
+}
+
+void ArgusRig::warnIncomplete(const int* setSlots, std::size_t n)
+{
   // Only complete sets are handed out, so one member missing holds the whole
   // rig on its last frame. At startup that is just the other renderers not
   // having settled yet and it clears itself within a second; sustained, it is a

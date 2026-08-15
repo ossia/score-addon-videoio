@@ -113,7 +113,7 @@ private:
   void returnUnused(std::size_t member, std::size_t slot);
   /// Capture thread. Say so, once, when the rig has been stuck on a member for
   /// long enough that it is not the other renderers still settling.
-  void reportIfIncomplete(const int* setSlots, std::size_t n);
+  void warnIncomplete(const int* setSlots, std::size_t n);
 
   /// Captures in a row that could not make a complete set. Four seconds at 30
   /// fps: long enough that a renderer still initialising has finished, short
