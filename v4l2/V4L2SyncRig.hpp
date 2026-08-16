@@ -20,6 +20,8 @@
 
 #include <Gfx/Graph/interop/CaptureCorrelator.hpp>
 
+#include <score_addon_videoio_export.h>
+
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -35,7 +37,7 @@ namespace Gfx::V4L2
  * partners are already publishing into. Returns null for an empty name, which
  * is how a device says it is not part of a rig.
  */
-std::shared_ptr<score::gfx::interop::CaptureCorrelator>
+SCORE_ADDON_VIDEOIO_EXPORT std::shared_ptr<score::gfx::interop::CaptureCorrelator>
 acquireSyncRig(const std::string& name, std::size_t memberCount);
 
 } // namespace Gfx::V4L2
