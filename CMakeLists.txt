@@ -641,4 +641,20 @@ if(SCORE_VIDEOIO_BUILD_TESTS AND VIDEOIO_HAS_V4L2)
   if(SCORE_STATIC_PLUGINS)
     target_link_libraries(V4L2ControlsTest PRIVATE ${SCORE_PLUGINS_LIST})
   endif()
+
+  # Both binaries return 77 when the machine has no capture device.
+  add_test(NAME test_videoio_v4l2_controls COMMAND V4L2ControlsTest)
+  set_tests_properties(test_videoio_v4l2_controls PROPERTIES
+    SKIP_RETURN_CODE 77
+    TIMEOUT 300
+    RUN_SERIAL TRUE
+    LABELS "videoio;v4l2")
+
+  # The capture cells take a device exclusively.
+  add_test(NAME test_videoio_v4l2_capture COMMAND V4L2CaptureTest)
+  set_tests_properties(test_videoio_v4l2_capture PROPERTIES
+    SKIP_RETURN_CODE 77
+    TIMEOUT 900
+    RUN_SERIAL TRUE
+    LABELS "videoio;v4l2")
 endif()

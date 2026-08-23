@@ -903,7 +903,7 @@ int main(int argc, char** argv)
   if(devices.empty())
   {
     std::printf("no V4L2 capture devices\n");
-    return 2;
+    return 77;
   }
 
   std::printf("== %zu capture device(s) ==\n", devices.size());

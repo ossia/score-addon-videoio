@@ -545,7 +545,10 @@ int main(int argc, char** argv)
   {
     const auto devs = videoDevices();
     if(devs.empty())
+    {
       std::printf("no /dev/video* on this machine\n");
+      return 77;
+    }
     for(const auto& d : devs)
       runDevice(d, doWrite);
   }
