@@ -437,7 +437,21 @@ bool VideoInputDevice::reconnect()
               auto ctl = std::make_unique<Gfx::V4L2::ControlTree>(
                   member.device, *dev, *streamNode);
               if(ctl->valid())
+              {
                 m_controls.push_back(std::move(ctl));
+              }
+              else
+              {
+                // The rig still streams -- controls are not needed to capture --
+                // but one member ends up with a /controls/ group and the other
+                // without, which looks like a bug in the tree rather than a
+                // sensor that would not open. A wedged sensor answers
+                // VIDIOC_STREAMON and every control ioctl with -EREMOTEIO.
+                qWarning() << "Direct Video Input: no controls for"
+                           << QString::fromStdString(member.device) << "(cam"
+                           << int(i) << ") -- it streams, but its exposure, gain"
+                           << "and frame_rate are not settable from score";
+              }
 
               // Declared by us, next to the driver's own: the demosaic
               // corrections and how the frame is fitted.
@@ -474,6 +488,13 @@ bool VideoInputDevice::reconnect()
             qDebug() << "Direct Video Input: V4L2" << ctl->count()
                      << "controls exposed";
             m_controls.push_back(std::move(ctl));
+          }
+          else
+          {
+            qWarning() << "Direct Video Input: no controls for"
+                       << QString::fromStdString(v4l2.device)
+                       << "-- it streams, but its exposure, gain and frame_rate"
+                       << "are not settable from score";
           }
         }
         qDebug() << "Direct Video Input: V4L2 host-staged node";
