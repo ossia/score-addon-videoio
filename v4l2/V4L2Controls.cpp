@@ -117,7 +117,7 @@ ControlSet& ControlSet::operator=(ControlSet&& other) noexcept
 bool ControlSet::open(const std::string& path)
 {
   close();
-  m_fd = score::gfx::v4l2::openDevice(path.c_str(), O_RDWR | O_CLOEXEC | O_NONBLOCK);
+  m_fd = score::gfx::v4l2::openDeviceRaw(path.c_str(), O_RDWR | O_CLOEXEC | O_NONBLOCK);
   if(m_fd < 0)
     return false;
   enumerate();
@@ -128,7 +128,7 @@ void ControlSet::close()
 {
   if(m_fd >= 0)
   {
-    score::gfx::v4l2::closeDevice(m_fd);
+    score::gfx::v4l2::closeDeviceRaw(m_fd);
     m_fd = -1;
   }
   m_controls.clear();
@@ -147,7 +147,7 @@ void ControlSet::enumerate()
   {
     v4l2_query_ext_ctrl q{};
     q.id = id | V4L2_CTRL_FLAG_NEXT_CTRL | V4L2_CTRL_FLAG_NEXT_COMPOUND;
-    if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_QUERY_EXT_CTRL, &q) != 0)
+    if(score::gfx::v4l2::retryIoctlRaw(m_fd, VIDIOC_QUERY_EXT_CTRL, &q) != 0)
       break;
     // A driver that answers NEXT_CTRL with an id that does not advance would
     // spin this loop forever, at device-creation time. Enumeration is strictly
@@ -204,7 +204,7 @@ void ControlSet::enumerate()
         v4l2_querymenu m{};
         m.id = q.id;
         m.index = static_cast<std::uint32_t>(i);
-        if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_QUERYMENU, &m) != 0)
+        if(score::gfx::v4l2::retryIoctlRaw(m_fd, VIDIOC_QUERYMENU, &m) != 0)
           continue;
 
         ControlMenuEntry e;
@@ -280,7 +280,7 @@ std::optional<std::int64_t> ControlSet::get(std::uint32_t id) const
 #ifdef V4L2_CTRL_WHICH_CUR_VAL
   cs.which = V4L2_CTRL_WHICH_CUR_VAL;
 #endif
-  if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_G_EXT_CTRLS, &cs) != 0)
+  if(score::gfx::v4l2::retryIoctlRaw(m_fd, VIDIOC_G_EXT_CTRLS, &cs) != 0)
     return std::nullopt;
 
   return d->int64Type ? c.value64 : static_cast<std::int64_t>(c.value);
@@ -304,7 +304,7 @@ std::optional<std::string> ControlSet::getString(std::uint32_t id) const
   v4l2_ext_controls cs{};
   cs.count = 1;
   cs.controls = &c;
-  if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_G_EXT_CTRLS, &cs) != 0)
+  if(score::gfx::v4l2::retryIoctlRaw(m_fd, VIDIOC_G_EXT_CTRLS, &cs) != 0)
     return std::nullopt;
 
   buf.resize(std::strlen(buf.c_str()));
@@ -342,7 +342,7 @@ ControlWriteResult ControlSet::set(std::uint32_t id, std::int64_t value)
   v4l2_ext_controls cs{};
   cs.count = 1;
   cs.controls = &c;
-  if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_S_EXT_CTRLS, &cs) != 0)
+  if(score::gfx::v4l2::retryIoctlRaw(m_fd, VIDIOC_S_EXT_CTRLS, &cs) != 0)
   {
     r.error = errno;
     return r;
@@ -387,7 +387,7 @@ ControlWriteResult ControlSet::setString(std::uint32_t id, const std::string& va
   v4l2_ext_controls cs{};
   cs.count = 1;
   cs.controls = &c;
-  if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_S_EXT_CTRLS, &cs) != 0)
+  if(score::gfx::v4l2::retryIoctlRaw(m_fd, VIDIOC_S_EXT_CTRLS, &cs) != 0)
   {
     r.error = errno;
     return r;
@@ -404,7 +404,7 @@ void ControlSet::refresh()
   {
     v4l2_query_ext_ctrl q{};
     q.id = c.id;
-    if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_QUERY_EXT_CTRL, &q) != 0)
+    if(score::gfx::v4l2::retryIoctlRaw(m_fd, VIDIOC_QUERY_EXT_CTRL, &q) != 0)
       continue;
     c.min = q.minimum;
     c.max = q.maximum;
@@ -429,7 +429,7 @@ bool ControlSet::subscribeEvents()
     // the enumeration saw until something moved; with it, every control
     // reports itself once on subscription and the tree starts truthful.
     sub.flags = V4L2_EVENT_SUB_FL_SEND_INITIAL;
-    if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_SUBSCRIBE_EVENT, &sub) == 0)
+    if(score::gfx::v4l2::retryIoctlRaw(m_fd, VIDIOC_SUBSCRIBE_EVENT, &sub) == 0)
       any = true;
   }
   return any;
@@ -445,7 +445,7 @@ bool ControlSet::pollEvents(const std::function<void(const Event&)>& onEvent)
   for(int guard = 0; guard < 4096; ++guard)
   {
     v4l2_event ev{};
-    if(score::gfx::v4l2::retryIoctl(m_fd, VIDIOC_DQEVENT, &ev) != 0)
+    if(score::gfx::v4l2::retryIoctlRaw(m_fd, VIDIOC_DQEVENT, &ev) != 0)
     {
       // ENOENT means the queue is empty; anything else and the device is gone.
       return errno == EAGAIN || errno == ENOENT;
