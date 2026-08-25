@@ -83,6 +83,10 @@ bool ArgusSession::start(
   return false;
 }
 void ArgusSession::stop() { }
+bool ArgusSession::applyLiveControls(const ArgusSettings&)
+{
+  return false;
+}
 std::uint64_t ArgusSession::capturedFrames() const noexcept
 {
   return 0;
@@ -370,6 +374,76 @@ std::size_t ArgusSession::streamCount() const noexcept
 std::uint64_t ArgusSession::capturedFrames() const noexcept
 {
   return d->frames.load(std::memory_order_acquire);
+}
+
+bool ArgusSession::applyLiveControls(const ArgusSettings& settings)
+{
+  // libargus reads the Request again on every repeat(), so editing the object
+  // already submitted and re-submitting it is what makes a control take effect
+  // without tearing the session down.
+  //
+  // Only what can change under a running capture is here. The sensor mode, the
+  // geometry and the frame duration are not: changing those means rebuilding
+  // the streams and the buffer pool, which is open()'s job.
+  if(!d || !d->iSession || !d->request)
+    return false;
+
+  auto* iReq = interface_cast<IRequest>(d->request);
+  if(!iReq)
+    return false;
+
+  if(auto* src = interface_cast<ISourceSettings>(iReq->getSourceSettings()))
+  {
+    if(settings.exposureTimeNs.set)
+      src->setExposureTimeRange(::Argus::Range<std::uint64_t>(
+          std::uint64_t(settings.exposureTimeNs.min),
+          std::uint64_t(settings.exposureTimeNs.max)));
+    if(settings.gain.set)
+      src->setGainRange(
+          ::Argus::Range<float>(float(settings.gain.min), float(settings.gain.max)));
+  }
+
+  if(auto* ac = interface_cast<IAutoControlSettings>(iReq->getAutoControlSettings()))
+  {
+    ac->setAeAntibandingMode(toArgus(settings.aeAntibanding));
+    ac->setAeLock(settings.aeLock);
+    ac->setAwbLock(settings.awbLock);
+    ac->setAwbMode(toArgus(settings.awbMode));
+    ac->setExposureCompensation(settings.exposureCompensation);
+    if(settings.ispDigitalGain.set)
+      ac->setIspDigitalGainRange(::Argus::Range<float>(
+          float(settings.ispDigitalGain.min), float(settings.ispDigitalGain.max)));
+    if(settings.saturationSet)
+    {
+      ac->setColorSaturationEnable(true);
+      ac->setColorSaturation(settings.saturation);
+    }
+  }
+
+  if(auto* dn = interface_cast<IDenoiseSettings>(d->request))
+  {
+    dn->setDenoiseMode(toDenoise(settings.denoiseMode));
+    if(settings.denoiseStrength >= 0.f)
+      dn->setDenoiseStrength(settings.denoiseStrength);
+  }
+  if(auto* ee = interface_cast<IEdgeEnhanceSettings>(d->request))
+  {
+    ee->setEdgeEnhanceMode(toEdge(settings.edgeEnhanceMode));
+    if(settings.edgeEnhanceStrength >= 0.f)
+      ee->setEdgeEnhanceStrength(settings.edgeEnhanceStrength);
+  }
+
+  // Before start() the edit is already in the Request that start() will submit,
+  // so there is nothing to re-submit and that is not a failure.
+  if(!d->running.load(std::memory_order_acquire))
+    return true;
+
+  if(d->iSession->repeat(d->request.get()) != STATUS_OK)
+  {
+    qWarning() << "Argus: repeat() failed applying a live control";
+    return false;
+  }
+  return true;
 }
 
 ArgusSession::LatencyStats ArgusSession::latency() const noexcept

@@ -23,6 +23,11 @@ struct SCORE_ADDON_VIDEOIO_EXPORT ArgusCaptureNode final
   std::unique_ptr<score::gfx::DMACaptureBackend> makeCaptureBackend(
       score::gfx::interop::VideoCaptureSlotRing& ring) const override;
 
+  /// Shared with the device's `controls/` group. Created here because the node
+  /// outlives every backend it makes, and the tree has to keep writing across
+  /// a stop/start.
+  std::shared_ptr<ArgusLiveControls> live{std::make_shared<ArgusLiveControls>()};
+
   ArgusSettings settings;
 };
 

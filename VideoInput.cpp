@@ -69,6 +69,7 @@
 
 #if defined(SCORE_HAS_ARGUS)
 #include <argus/ArgusCaptureNode.hpp>
+#include <argus/ArgusControlTree.hpp>
 #include <argus/ArgusRuntime.hpp>
 #endif
 
@@ -261,6 +262,9 @@ void VideoInputDevice::disconnect()
   m_controls.clear();
 #endif
   m_render.clear();
+#if defined(SCORE_HAS_ARGUS)
+  m_argusControls.clear();
+#endif
   auto prev = std::move(m_dev);
   m_dev = {};
   deviceChanged(prev.get(), nullptr);
@@ -563,8 +567,20 @@ bool VideoInputDevice::reconnect()
             auto* streamNode = dev->add_stream(
                 node, &plug->exec, QString("cam%1").arg(int(i)).toStdString());
             if(streamNode)
+            {
               m_render.push_back(std::make_unique<Gfx::CaptureControlTree>(
                   node->adjustments(), *dev, *streamNode));
+
+              // Argus publishes no controls to walk, unlike V4L2: the knobs are
+              // setters on a Request, so the group is written out rather than
+              // discovered. Without this a rig shows only /render/, and the
+              // sensor's own exposure is unreachable from score.
+              auto live = node->live;
+              m_argusControls.push_back(std::make_unique<Gfx::Argus::ArgusControlTree>(
+                  member, [live](const Gfx::Argus::ArgusSettings& s) {
+                return live->apply(s);
+                  }, *dev, *streamNode));
+            }
           }
 
           qDebug() << "Direct Video Input: Argus rig of" << int(ids.size())
@@ -579,8 +595,14 @@ bool VideoInputDevice::reconnect()
         auto* argusNode = new Gfx::Argus::ArgusCaptureNode{a};
         registerGpuDirect(argusNode);
         if(m_dev)
+        {
           m_render.push_back(std::make_unique<Gfx::CaptureControlTree>(
               argusNode->adjustments(), *m_dev, m_dev->get_root_node()));
+          auto live = argusNode->live;
+          m_argusControls.push_back(std::make_unique<Gfx::Argus::ArgusControlTree>(
+              a, [live](const Gfx::Argus::ArgusSettings& s) { return live->apply(s); },
+              *m_dev, m_dev->get_root_node()));
+        }
         qDebug() << "Direct Video Input: Argus camera node";
         return connected();
 #else

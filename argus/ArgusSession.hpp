@@ -120,6 +120,18 @@ public:
       std::function<std::uint32_t(std::size_t)> takeReturned);
   void stop();
 
+  /// Re-apply the controls that can change under a running capture: exposure
+  /// time, gain, ISP digital gain, AE/AWB mode and locks, exposure
+  /// compensation, saturation, denoise and edge enhancement.
+  ///
+  /// Not the sensor mode, the geometry or the frame duration -- those need the
+  /// streams and the buffer pool rebuilt, which is what open() does.
+  ///
+  /// Safe before start(): the edit lands in the Request that start() submits.
+  /// Returns false only when the request could not be reached or the resubmit
+  /// was refused.
+  bool applyLiveControls(const ArgusSettings& settings);
+
   /// Frames Argus has handed us. The device's own cadence, independent of how
   /// fast the renderer consumes -- a harness reporting only its consumption
   /// rate cannot tell a stalled sensor from a slow renderer.

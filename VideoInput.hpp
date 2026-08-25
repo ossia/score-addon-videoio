@@ -33,6 +33,13 @@ class ControlTree;
 }
 #endif
 
+#if defined(SCORE_HAS_ARGUS)
+namespace Gfx::Argus
+{
+class ArgusControlTree;
+}
+#endif
+
 namespace Gfx::VideoIO
 {
 
@@ -114,6 +121,13 @@ private:
   /// viewport fitting, which no driver knows about. Not vendor-specific, so
   /// unlike the driver controls it exists on every platform.
   mutable std::vector<std::unique_ptr<Gfx::CaptureControlTree>> m_render;
+
+  /// The Argus sensor controls, `<stream>/controls`. Argus-only: the V4L2 side
+  /// gets the same group from the driver through V4L2::ControlTree. Guarded
+  /// like m_controls is, since ArgusControlTree only exists where Argus does.
+#if defined(SCORE_HAS_ARGUS)
+  mutable std::vector<std::unique_ptr<Gfx::Argus::ArgusControlTree>> m_argusControls;
+#endif
 };
 
 class VideoInputSettingsWidget final : public Device::ProtocolSettingsWidget

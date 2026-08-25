@@ -32,24 +32,80 @@ struct ArgusCpuPolicy : score::gfx::interop::CpuStagedNoLockPolicy
 using ArgusCpuCapture = score::gfx::interop::CpuStagedCapture<ArgusCpuPolicy>;
 
 
+bool ArgusLiveControls::apply(const ArgusSettings& s)
+{
+  std::lock_guard g{m_mutex};
+  m_settings = s;
+  // No session yet, or the capture is between backends: the edit is kept and
+  // open() will use it, which is not a failure.
+  return m_session ? m_session->applyLiveControls(s) : true;
+}
+
+void ArgusLiveControls::bind(ArgusSession* s)
+{
+  std::lock_guard g{m_mutex};
+  m_session = s;
+  // Whatever was edited while nothing was running applies now.
+  if(s)
+    s->applyLiveControls(m_settings);
+}
+
+ArgusSettings ArgusLiveControls::snapshot() const
+{
+  std::lock_guard g{m_mutex};
+  return m_settings;
+}
+
 ArgusInputBackend::ArgusInputBackend(
-    ArgusSettings settings, score::gfx::interop::VideoCaptureSlotRing& ring)
+    ArgusSettings settings, score::gfx::interop::VideoCaptureSlotRing& ring,
+    std::shared_ptr<ArgusLiveControls> live)
     : m_settings{std::move(settings)}
     , m_ring{ring}
+    , m_live{std::move(live)}
 {
 }
 
 ArgusInputBackend::~ArgusInputBackend()
 {
+  // Before stop(), so no control write can reach a session that is being torn
+  // down: the tree outlives this backend.
+  if(m_live)
+    m_live->bind(nullptr);
   stop();
 }
 
 bool ArgusInputBackend::open()
 {
+  // Anything written to the control tree before the capture existed belongs in
+  // the settings this open() uses; only the live-settable fields are taken, so
+  // the geometry and sync layout resolved above are left alone.
+  if(m_live)
+  {
+    const auto edited = m_live->snapshot();
+    m_settings.exposureTimeNs = edited.exposureTimeNs;
+    m_settings.gain = edited.gain;
+    m_settings.ispDigitalGain = edited.ispDigitalGain;
+    m_settings.exposureCompensation = edited.exposureCompensation;
+    m_settings.aeAntibanding = edited.aeAntibanding;
+    m_settings.aeLock = edited.aeLock;
+    m_settings.awbLock = edited.awbLock;
+    m_settings.awbMode = edited.awbMode;
+    m_settings.saturation = edited.saturation;
+    m_settings.saturationSet = edited.saturationSet;
+    m_settings.denoiseMode = edited.denoiseMode;
+    m_settings.denoiseStrength = edited.denoiseStrength;
+    m_settings.edgeEnhanceMode = edited.edgeEnhanceMode;
+    m_settings.edgeEnhanceStrength = edited.edgeEnhanceStrength;
+  }
+
   if(m_settings.syncRig.empty())
   {
     m_session = &m_ownSession;
-    return m_ownSession.open(m_settings);
+    if(!m_ownSession.open(m_settings))
+      return false;
+    if(m_live)
+      m_live->bind(m_session);
+    return true;
   }
 
   m_rig = acquireArgusRig(
@@ -78,6 +134,11 @@ bool ArgusInputBackend::open()
   }
 
   m_session = session;
+  // A rig member binds the session it shares: every member's control tree then
+  // drives the one session, which is the point of a rig -- one AE loop for both
+  // eyes rather than two that drift apart.
+  if(m_live)
+    m_live->bind(m_session);
   return true;
 }
 

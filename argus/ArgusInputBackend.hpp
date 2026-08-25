@@ -23,6 +23,9 @@
 
 #include <argus/ArgusSession.hpp>
 #include <argus/ArgusSettings.hpp>
+
+#include <memory>
+#include <mutex>
 #include <argus/ArgusSyncRig.hpp>
 
 #include <Gfx/Graph/DMACaptureInputNode.hpp>
@@ -38,13 +41,43 @@ struct BorrowedHostImportCapture;
 namespace Gfx::Argus
 {
 
+/**
+ * @brief The settings a running capture can still be told to change.
+ *
+ * The control tree lives on the device and outlives any one backend; the
+ * session exists only between open() and close(). Neither can safely hold a
+ * pointer to the other, so both hold this instead: the tree writes settings
+ * into it, and whichever backend is currently open publishes its session here
+ * so those writes reach libargus.
+ *
+ * A write before the capture starts is not lost -- it lands in the settings
+ * open() will use.
+ */
+struct SCORE_ADDON_VIDEOIO_EXPORT ArgusLiveControls
+{
+  /// Update the settings and, if a capture is running, apply them to it.
+  bool apply(const ArgusSettings& s);
+
+  /// Called by the backend around the session's lifetime. Null clears it.
+  void bind(ArgusSession* s);
+
+  /// The settings as last edited, for the next open().
+  ArgusSettings snapshot() const;
+
+private:
+  mutable std::mutex m_mutex;
+  ArgusSettings m_settings;
+  ArgusSession* m_session{};
+};
+
 class ArgusInputBackend final
     : public score::gfx::DMACaptureBackend
     , public ArgusRigMember
 {
 public:
   ArgusInputBackend(
-      ArgusSettings settings, score::gfx::interop::VideoCaptureSlotRing& ring);
+      ArgusSettings settings, score::gfx::interop::VideoCaptureSlotRing& ring,
+      std::shared_ptr<ArgusLiveControls> live = {});
   ~ArgusInputBackend() override;
 
   bool open() override;
@@ -92,6 +125,9 @@ private:
 
   ArgusSettings m_settings;
   score::gfx::interop::VideoCaptureSlotRing& m_ring;
+
+  /// Shared with the device's control tree; null when nothing is driving it.
+  std::shared_ptr<ArgusLiveControls> m_live;
 
   /// Used when this camera stands alone. A rig member's session belongs to the
   /// rig, because a session is the sync domain and cannot be split across the
