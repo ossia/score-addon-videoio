@@ -58,36 +58,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows"
 else()
   set(VIDEOIO_AJA_DEFAULT OFF)
 endif()
-# On Apple the SDK insists on reading a version out of the sysroot path, and
-# breaks two different ways when it cannot. cmake/CMakeOptions.cmake does
-#
-#   get_filename_component(MACOS_SDK_NAME ${CMAKE_OSX_SYSROOT} NAME_WLE)
-#   string(REPLACE "MacOSX" "" MACOS_SDK_VERSION ${MACOS_SDK_NAME})
-#   string(REPLACE "." ";" MACOS_SDK_VERSION_LIST ${MACOS_SDK_VERSION})
-#   list(GET MACOS_SDK_VERSION_LIST 0 MACOS_SDK_VERSION_MAJOR)
-#   list(GET MACOS_SDK_VERSION_LIST 1 MACOS_SDK_VERSION_MINOR)
-#
-# with no guard on any step:
-#   * CMAKE_OSX_SYSROOT unset -- get_filename_component collapses to two
-#     arguments, "incorrect number of arguments". A Homebrew build that never
-#     set one hits this.
-#   * CMAKE_OSX_SYSROOT set but UNVERSIONED -- current Xcode ships
-#     .../SDKs/MacOSX.sdk, so MACOS_SDK_NAME is "MacOSX", the version comes out
-#     empty, and the next REPLACE gets three arguments: "string sub-command
-#     REPLACE requires at least four arguments".
-#
-# So the requirement is not "a sysroot" but "a sysroot naming a major.minor
-# version", which is what list(GET ... 1) needs.
-if(APPLE)
-  set(VIDEOIO_AJA_SDK_VERSION "")
-  if(CMAKE_OSX_SYSROOT)
-    get_filename_component(VIDEOIO_OSX_SDK_NAME "${CMAKE_OSX_SYSROOT}" NAME_WLE)
-    string(REPLACE "MacOSX" "" VIDEOIO_AJA_SDK_VERSION "${VIDEOIO_OSX_SDK_NAME}")
-  endif()
-  if(NOT VIDEOIO_AJA_SDK_VERSION MATCHES "^[0-9]+\\.[0-9]+")
-    set(VIDEOIO_AJA_DEFAULT OFF)
-  endif()
-endif()
+# The vendored SDK used to abort an Apple configure when the sysroot did not
+# name a version -- unset, or the unversioned .../SDKs/MacOSX.sdk that current
+# Xcode ships. Fixed in the SDK itself (libajantv2 8bf4028e35: the version is
+# only reported, so it is parsed only when present), so no guard is needed here
+# and AJA stays available on macOS.
 option(VIDEOIO_ENABLE_AJA "Build the vendored AJA SDK and the AJA backend"
        ${VIDEOIO_AJA_DEFAULT})
 if(VIDEOIO_ENABLE_AJA AND EXISTS "${VIDEOIO_AJA_SDK_ROOT}/ajantv2/includes/ntv2card.h")
