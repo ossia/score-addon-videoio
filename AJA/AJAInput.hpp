@@ -6,6 +6,8 @@
 
 #include <Gfx/GfxInputDevice.hpp>
 
+#include <score_addon_videoio_export.h>
+
 #include <ntv2enums.h>
 
 #include <verdigris>
@@ -30,7 +32,13 @@ struct AJAInputSettings;
 /// CPU-staging capture factory (defined in AJAInput.cpp): opens the AJA card and
 /// returns a Video::ExternalInput feeding score's camera pipeline, or null on
 /// failure. Declared here so the unified Direct Video I/O device can reuse it.
-std::shared_ptr<::Video::ExternalInput> makeAJACapture(const AJAInputSettings&);
+///
+/// Exported because the round-trip test harness is its own executable and calls
+/// it across the library boundary. The declaration has to carry the attribute
+/// wherever it is visible: a later redeclaration cannot add dllexport, which is
+/// what a Windows build reports if the two disagree.
+SCORE_ADDON_VIDEOIO_EXPORT std::shared_ptr<::Video::ExternalInput>
+makeAJACapture(const AJAInputSettings&);
 
 /**
  * @brief Per-frame pixel format the AJA card delivers to score.

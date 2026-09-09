@@ -58,6 +58,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows"
 else()
   set(VIDEOIO_AJA_DEFAULT OFF)
 endif()
+# On Apple the SDK also reads the sysroot without checking it is set:
+# cmake/CMakeOptions.cmake does
+#   get_filename_component(MACOS_SDK_NAME ${CMAKE_OSX_SYSROOT} NAME_WLE)
+# which collapses to two arguments and fails the configure with "incorrect
+# number of arguments" when CMAKE_OSX_SYSROOT is empty, as it is in a Homebrew
+# build that never set it.
+if(APPLE AND NOT CMAKE_OSX_SYSROOT)
+  set(VIDEOIO_AJA_DEFAULT OFF)
+endif()
 option(VIDEOIO_ENABLE_AJA "Build the vendored AJA SDK and the AJA backend"
        ${VIDEOIO_AJA_DEFAULT})
 if(VIDEOIO_ENABLE_AJA AND EXISTS "${VIDEOIO_AJA_SDK_ROOT}/ajantv2/includes/ntv2card.h")
