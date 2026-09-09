@@ -43,9 +43,23 @@ set(VIDEOIO_AJA_SDK_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/libajantv2"
 # Presence of the submodule is not sufficient: the vendored SDK does not
 # cross-compile everywhere (on aarch64/Tegra with a C++23 libc++ its
 # ENDIAN_32NtoH and `endian` clash with std::endian), and a checkout that
-# happens to include it must still be buildable there. Default ON so existing
-# builds are unchanged.
-option(VIDEOIO_ENABLE_AJA "Build the vendored AJA SDK and the AJA backend" ON)
+# happens to include it must still be buildable there.
+#
+# It also refuses outright to configure off its own list: libajantv2's
+# aja_ntv2_log_build_info (cmake/Helpers.cmake) accepts Windows, Darwin, Linux
+# and BareMetal and calls FATAL_ERROR on anything else, so a FreeBSD configure
+# dies with "Unsupported platform: FreeBSD" before score is built at all. The
+# default therefore follows the SDK's own list; supported platforms are
+# unchanged and it can still be forced either way.
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows"
+   OR CMAKE_SYSTEM_NAME STREQUAL "Darwin"
+   OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(VIDEOIO_AJA_DEFAULT ON)
+else()
+  set(VIDEOIO_AJA_DEFAULT OFF)
+endif()
+option(VIDEOIO_ENABLE_AJA "Build the vendored AJA SDK and the AJA backend"
+       ${VIDEOIO_AJA_DEFAULT})
 if(VIDEOIO_ENABLE_AJA AND EXISTS "${VIDEOIO_AJA_SDK_ROOT}/ajantv2/includes/ntv2card.h")
   # Build the vendored AJA SDK as a static lib named `ajantv2`. Guarded so it
   # coexists with a still-present (deprecated) score-addon-aja in the same tree.
