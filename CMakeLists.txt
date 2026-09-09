@@ -55,9 +55,19 @@ if(VIDEOIO_ENABLE_AJA AND EXISTS "${VIDEOIO_AJA_SDK_ROOT}/ajantv2/includes/ntv2c
     set(AJANTV2_DISABLE_TOOLS       ON  CACHE BOOL "" FORCE)
     set(AJANTV2_DISABLE_PLUGIN_LOAD ON  CACHE BOOL "" FORCE)
     set(AJANTV2_DISABLE_TESTS       ON  CACHE BOOL "" FORCE)
-    add_subdirectory("${VIDEOIO_AJA_SDK_ROOT}"
-                     "${CMAKE_CURRENT_BINARY_DIR}/libajantv2"
-                     EXCLUDE_FROM_ALL)
+    # The SDK is not unity-safe: ntv2anc.cpp and ntv2aux.cpp each define
+    # kNumDIDRegisters and extractorInitParamsTable at file scope, and
+    # extractorInitParamsTable is a different struct type in each, so merging
+    # them into one translation unit is a redefinition. ntv2regvpid.cpp
+    # collides the same way on gChannelToSDIInput3GStatusRegNum. block() keeps
+    # the setting on the SDK's own targets, which read it as they are created,
+    # and leaves the rest of the build unity as configured.
+    block()
+      set(CMAKE_UNITY_BUILD OFF)
+      add_subdirectory("${VIDEOIO_AJA_SDK_ROOT}"
+                       "${CMAKE_CURRENT_BINARY_DIR}/libajantv2"
+                       EXCLUDE_FROM_ALL)
+    endblock()
     # The SDK declares its per-config options (-O0 -Wall in RelWithDebInfo /
     # Debug) PUBLIC, so they propagate to every consumer and clash with the
     # consumers' own flags (clang rejects a PCH built at a different -O level).
