@@ -30,6 +30,17 @@ extern "C" {
 #if defined(SCORE_HAS_AJA_DVP_BRIDGE)
 #include <AJA/AjaDmaLockPolicy.hpp>
 #if defined(_WIN32)
+// AJA's Windows driver interface, reached through <ntv2card.h> above, pulls in
+// <ks.h>, which defines GUID_NULL as a MACRO via DEFINE_GUIDNAMED. The D3D11
+// header below reaches <cguid.h>, which DECLARES GUID_NULL as a variable -- and
+// a macro of that name turns the declaration into a syntax error:
+//
+//   cguid.h(33,18): error : expected unqualified-id
+//   ks.h(64,19): note: expanded from macro 'GUID_NULL'
+//
+// Drop the macro at the boundary: everything above has been preprocessed
+// already, and everything below wants the COM declaration.
+#undef GUID_NULL
 #include <Gfx/Graph/interop/DvpCaptureD3D11.hpp>
 #define AJA_HAS_CAPTURE_DVP_D3D11 1
 #endif
