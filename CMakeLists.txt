@@ -561,6 +561,22 @@ if(VIDEOIO_HAS_MAGEWELL)
   endif()
 endif()
 
+# Windows only, and only under a unity build: <ks.h> (kernel streaming, reached
+# through the capture-card headers) defines GUID_NULL as a MACRO via
+# DEFINE_GUIDNAMED, while <cguid.h> -- reached through qrhid3d11_p.h -> d3d11_1.h
+# -> ole2.h -> objbase.h -> combaseapi.h -- DECLARES it:
+#
+#   cguid.h(33,18): error : expected unqualified-id
+#   ks.h(64,19): message : expanded from macro 'GUID_NULL'
+#
+# Separate translation units never see both orderings; merging them into
+# unity_0_cxx.cxx does. Turning the unity build off for this target is the same
+# remedy already applied to ajantv2 above, for the same reason: a header
+# collision that only exists because the sources were concatenated.
+if(WIN32)
+  set_target_properties(${PROJECT_NAME} PROPERTIES UNITY_BUILD OFF)
+endif()
+
 setup_score_plugin(${PROJECT_NAME})
 
 # --- AJA card-to-card round-trip test harness (opt-in) ----------------------
