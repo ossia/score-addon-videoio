@@ -51,8 +51,17 @@ struct AjaRdmaOutputD3D11 final : score::gfx::interop::VideoOutputStrategy
     oc.encoderFactory = [fmt = m_targetFormat] {
       return ajaMakeWireEncoder(fmt);
     };
-    oc.colorConversion = score::gfx::colorMatrixOut(
-        AVCOL_SPC_BT709, AVCOL_TRC_BT709, AVCOL_RANGE_MPEG, AVCOL_PRI_BT709);
+    // Take the backend's colour decision rather than inventing one: it is the
+      // same object that answers colorConversion() for the host-staged path, so
+      // HDR10/HLG now reach the RDMA path too. Before this, selecting HDR10 gave
+      // BT.2020 PQ or SDR BT.709 depending on which path won at runtime, while
+      // the card signalled HDR10 downstream either way. Fall back only if the
+      // node did not supply one.
+      oc.colorConversion = !c.colorConversion.isEmpty()
+                                  ? c.colorConversion
+                                  : score::gfx::colorMatrixOut(
+                                        AVCOL_SPC_BT709, AVCOL_TRC_BT709,
+                                        AVCOL_RANGE_MPEG, AVCOL_PRI_BT709);
     oc.registrar.registerSlot
         = [card = m_card](void* gpuPtr, std::uint32_t size) {
             return card->DMABufferLock(
