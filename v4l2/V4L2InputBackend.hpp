@@ -34,7 +34,7 @@
 
 #include <Gfx/Graph/DMACaptureInputNode.hpp>
 #include <Gfx/Graph/interop/CaptureCorrelator.hpp>
-#include <Gfx/Graph/interop/VideoPixelFormat.hpp>
+#include <Video/VideoPixelFormat.hpp>
 
 #include <atomic>
 #include <functional>
@@ -173,7 +173,7 @@ private:
 /// `driver` is VIDIOC_QUERYCAP's driver name, used to apply the sample-packing
 /// quirks of drivers that deviate from what the fourcc specifies. Passing
 /// nothing selects the specified behaviour.
-score::gfx::interop::VideoPixelFormat neutralFromV4L2Fourcc(
+Video::VideoPixelFormat neutralFromV4L2Fourcc(
     std::uint32_t fourcc, std::string_view driver = {}) noexcept;
 
 } // namespace Gfx::V4L2

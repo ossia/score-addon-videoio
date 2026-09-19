@@ -54,7 +54,7 @@ public:
   bool isOpen() const noexcept override { return m_open; }
   uint32_t frameByteSize() const noexcept override { return m_frameByteSize; }
   int visibleRows() const noexcept override { return m_height; }
-  score::gfx::interop::VideoPixelFormat wireFormat() const noexcept override;
+  Video::VideoPixelFormat wireFormat() const noexcept override;
   bool prefersFloatRender() const noexcept override;
   QString colorConversion() const override;
   std::vector<score::gfx::interop::HostStagedPlane> planes() const override;

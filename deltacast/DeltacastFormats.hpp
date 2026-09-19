@@ -1,7 +1,7 @@
 #pragma once
 #include <deltacast/Deltacast.hpp>
 
-#include <Gfx/Graph/interop/VideoPixelFormat.hpp>
+#include <Video/VideoPixelFormat.hpp>
 
 #include <QString>
 
@@ -69,10 +69,10 @@ inline VHD_BUFFERPACKING vhdPackingFromToken(const QString& p) noexcept
 }
 
 /// VHD buffer packing -> neutral wire format (for makeWireEncoder/Decoder).
-inline score::gfx::interop::VideoPixelFormat
+inline Video::VideoPixelFormat
 neutralFromPacking(VHD_BUFFERPACKING pack) noexcept
 {
-  using F = score::gfx::interop::VideoPixelFormat;
+  using F = Video::VideoPixelFormat;
   switch(pack)
   {
     case VHD_BUFPACK_VIDEO_YUV422_8:  return F::UYVY422;

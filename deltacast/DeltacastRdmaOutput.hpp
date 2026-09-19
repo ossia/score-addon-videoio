@@ -52,7 +52,7 @@
 #include <Gfx/Graph/interop/VideoOutputStrategy.hpp>
 #include <Gfx/Graph/interop/InteropFence.hpp>
 #include <Gfx/Graph/interop/RdmaGpuBuffer.hpp>
-#include <Gfx/Graph/interop/VideoPixelFormat.hpp>
+#include <Video/VideoPixelFormat.hpp>
 #include <Gfx/Graph/interop/VkExternalMemoryHelpers.hpp>
 #include <Gfx/Graph/interop/VulkanRhiContext.hpp>
 
@@ -83,7 +83,7 @@ struct DeltacastRdmaOutput final : score::gfx::interop::VideoOutputStrategy
 {
   DeltacastRdmaOutput(
       DeltacastOutputBackend* backend,
-      score::gfx::interop::VideoPixelFormat neutral) noexcept
+      Video::VideoPixelFormat neutral) noexcept
       : m_backend{backend}
       , m_neutral{neutral}
   {
@@ -92,7 +92,7 @@ struct DeltacastRdmaOutput final : score::gfx::interop::VideoOutputStrategy
   // Back-ref to the playout backend that owns the VHD stream: init() registers
   // its RDMA slots there and submitFrame() maps the returned gpuVA -> VHD slot.
   DeltacastOutputBackend* m_backend{};
-  score::gfx::interop::VideoPixelFormat m_neutral{};
+  Video::VideoPixelFormat m_neutral{};
 
   score::gfx::interop::VideoOutputStrategyConfig cfg{};
 

@@ -120,17 +120,17 @@ int AjaOutputBackend::visibleRows() const noexcept
   return static_cast<int>(m_formatDesc.GetVisibleRasterHeight());
 }
 
-score::gfx::interop::VideoPixelFormat
+Video::VideoPixelFormat
 AjaOutputBackend::wireFormat() const noexcept
 {
   return ntv2FormatTo(m_bufferFormat);
 }
 
-score::gfx::interop::VideoPixelFormat
+Video::VideoPixelFormat
 AjaOutputBackend::encoderFormat() const noexcept
 {
   if(m_v210NeedsCpuPack)
-    return score::gfx::interop::VideoPixelFormat::UYVY422;
+    return Video::VideoPixelFormat::UYVY422;
   return wireFormat();
 }
 
