@@ -15,7 +15,7 @@
  */
 
 #include <AJA/AJAInput.hpp>
-#include <Gfx/Graph/interop/VideoPixelFormat.hpp>
+#include <Video/VideoPixelFormat.hpp>
 
 #include <ntv2enums.h>
 
@@ -135,10 +135,10 @@ inline NTV2FrameBufferFormat parseAjaPixelFormat(const QString& format) noexcept
 }
 
 /// AJA capture pixel format -> neutral wire format (for makeWireDecoder).
-inline score::gfx::interop::VideoPixelFormat
+inline Video::VideoPixelFormat
 ajaInputFormatTo(AJAInputPixelFormat fmt) noexcept
 {
-  using F = score::gfx::interop::VideoPixelFormat;
+  using F = Video::VideoPixelFormat;
   switch(fmt)
   {
     case AJAInputPixelFormat::YCbCr8:  return F::UYVY422;
@@ -170,10 +170,10 @@ inline bool ajaFbfPlayoutCapable(NTV2FrameBufferFormat fmt) noexcept
   }
 }
 
-inline score::gfx::interop::VideoPixelFormat
+inline Video::VideoPixelFormat
 ntv2FormatTo(NTV2FrameBufferFormat fmt) noexcept
 {
-  using F = score::gfx::interop::VideoPixelFormat;
+  using F = Video::VideoPixelFormat;
   switch(fmt)
   {
     case NTV2_FBF_8BIT_YCBCR:            return F::UYVY422;

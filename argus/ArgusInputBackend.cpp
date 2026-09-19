@@ -4,7 +4,7 @@
 #include <Gfx/Graph/decoders/WireDecoderFactory.hpp>
 #include <Gfx/Graph/interop/BorrowedHostImportCapture.hpp>
 #include <Gfx/Graph/interop/CpuStagedCapture.hpp>
-#include <Gfx/Graph/interop/VideoPixelFormat.hpp>
+#include <Video/VideoPixelFormat.hpp>
 
 #if defined(__linux__)
 #include <Gfx/Graph/interop/DmaBufImportCapture.hpp>
@@ -203,7 +203,7 @@ ArgusInputBackend::makeDecoder(Video::VideoMetadata& meta)
     return std::make_unique<score::gfx::NV12ExternalOESDecoder>(meta);
 
   return score::gfx::makeWireDecoder(
-      score::gfx::interop::VideoPixelFormat::NV12, meta);
+      Video::VideoPixelFormat::NV12, meta);
 }
 
 std::unique_ptr<score::gfx::interop::VideoCaptureStrategy>

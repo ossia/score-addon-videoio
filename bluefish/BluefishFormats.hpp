@@ -1,7 +1,7 @@
 #pragma once
 #include <bluefish/Bluefish.hpp>
 
-#include <Gfx/Graph/interop/VideoPixelFormat.hpp>
+#include <Video/VideoPixelFormat.hpp>
 
 #include <QString>
 
@@ -61,10 +61,10 @@ inline BLUE_U32 memFmtFromTokenBlue(const QString& p) noexcept
 }
 
 /// EMemoryFormat -> neutral wire format (for makeWireEncoder / makeWireDecoder).
-inline score::gfx::interop::VideoPixelFormat
+inline Video::VideoPixelFormat
 neutralFromMemFmt(BLUE_U32 memFmt) noexcept
 {
-  using F = score::gfx::interop::VideoPixelFormat;
+  using F = Video::VideoPixelFormat;
   switch(memFmt)
   {
     case MEM_FMT_V210:    return F::V210;

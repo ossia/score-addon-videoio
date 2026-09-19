@@ -797,7 +797,7 @@ void VideoInputSettingsWidget::onVendorChanged()
       // The driver name only remaps one known layout onto another, never
       // Unknown onto known, so decodability does not depend on it.
       if(Gfx::V4L2::neutralFromV4L2Fourcc(m.fourcc, {})
-         == score::gfx::interop::VideoPixelFormat::Unknown)
+         == Video::VideoPixelFormat::Unknown)
         continue;
       seen.push_back(tok);
       m_pixelFormatCombo->addItem(tok, tok);

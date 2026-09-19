@@ -1,7 +1,7 @@
 #pragma once
 #include <magewell/Magewell.hpp>
 
-#include <Gfx/Graph/interop/VideoPixelFormat.hpp>
+#include <Video/VideoPixelFormat.hpp>
 
 #include <QString>
 
@@ -21,10 +21,10 @@ inline std::uint32_t fourccFromToken(const QString& p) noexcept
 }
 
 /// MWCapture FOURCC -> neutral wire format (for makeWireDecoder).
-inline score::gfx::interop::VideoPixelFormat
+inline Video::VideoPixelFormat
 neutralFromFourcc(std::uint32_t fourcc) noexcept
 {
-  using F = score::gfx::interop::VideoPixelFormat;
+  using F = Video::VideoPixelFormat;
   switch(fourcc)
   {
     case MWFOURCC_UYVY: return F::UYVY422;

@@ -1,7 +1,7 @@
 #pragma once
 #include <decklink/DeckLink.hpp>
 
-#include <Gfx/Graph/interop/VideoPixelFormat.hpp>
+#include <Video/VideoPixelFormat.hpp>
 
 namespace Gfx::DeckLink
 {
@@ -10,10 +10,10 @@ namespace Gfx::DeckLink
 /// 1:1 to an existing score encoder/decoder (verified in MULTIVENDOR_IO_MAP.md);
 /// returns Unknown for the encoded (H.265/DNxHR) and rarely-used (Ay10/R10b)
 /// formats we don't drive yet.
-inline score::gfx::interop::VideoPixelFormat
+inline Video::VideoPixelFormat
 toNeutralFormat(BMDPixelFormat fmt) noexcept
 {
-  using F = score::gfx::interop::VideoPixelFormat;
+  using F = Video::VideoPixelFormat;
   switch(fmt)
   {
     case bmdFormat8BitYUV:    return F::UYVY422;  // '2vuy'
@@ -30,9 +30,9 @@ toNeutralFormat(BMDPixelFormat fmt) noexcept
 /// Neutral wire format -> BMDPixelFormat. 0 (not a valid BMDPixelFormat) when
 /// DeckLink has no matching on-wire format.
 inline BMDPixelFormat fromNeutralFormat(
-    score::gfx::interop::VideoPixelFormat fmt) noexcept
+    Video::VideoPixelFormat fmt) noexcept
 {
-  using F = score::gfx::interop::VideoPixelFormat;
+  using F = Video::VideoPixelFormat;
   switch(fmt)
   {
     case F::UYVY422: return bmdFormat8BitYUV;

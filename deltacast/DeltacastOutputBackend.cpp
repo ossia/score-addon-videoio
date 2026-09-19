@@ -175,7 +175,7 @@ void DeltacastOutputBackend::close()
   m_open = false;
 }
 
-score::gfx::interop::VideoPixelFormat
+Video::VideoPixelFormat
 DeltacastOutputBackend::wireFormat() const noexcept
 {
   return neutralFromPacking(

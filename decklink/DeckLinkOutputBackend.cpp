@@ -424,7 +424,7 @@ void DeckLinkOutputBackend::close()
   m_open = false;
 }
 
-score::gfx::interop::VideoPixelFormat
+Video::VideoPixelFormat
 DeckLinkOutputBackend::wireFormat() const noexcept
 {
   return toNeutralFormat(m_settings.pixelFormat);

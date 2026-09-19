@@ -121,7 +121,7 @@ void BluefishOutputBackend::close()
   m_open = false;
 }
 
-score::gfx::interop::VideoPixelFormat
+Video::VideoPixelFormat
 BluefishOutputBackend::wireFormat() const noexcept
 {
   return neutralFromMemFmt(m_settings.memoryFormat);

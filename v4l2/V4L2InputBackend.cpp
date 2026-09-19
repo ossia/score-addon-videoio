@@ -23,7 +23,7 @@
 
 namespace Gfx::V4L2
 {
-using score::gfx::interop::VideoPixelFormat;
+using Video::VideoPixelFormat;
 
 // The fourcc table lives in score-plugin-gfx so the camera enumeration and this
 // capture path cannot drift apart; compressed fourccs deliberately resolve to
@@ -202,21 +202,21 @@ V4L2InputBackend::makeDecoder(Video::VideoMetadata& meta)
     const auto phase = [neutral]() -> std::optional<P> {
       switch(neutral)
       {
-        case score::gfx::interop::VideoPixelFormat::BayerRGGB8:
-        case score::gfx::interop::VideoPixelFormat::BayerRG8:
-        case score::gfx::interop::VideoPixelFormat::BayerRGGB10:
-        case score::gfx::interop::VideoPixelFormat::BayerRGGB16:
-        case score::gfx::interop::VideoPixelFormat::BayerRG12:
+        case Video::VideoPixelFormat::BayerRGGB8:
+        case Video::VideoPixelFormat::BayerRG8:
+        case Video::VideoPixelFormat::BayerRGGB10:
+        case Video::VideoPixelFormat::BayerRGGB16:
+        case Video::VideoPixelFormat::BayerRG12:
           return P::RGGB;
-        case score::gfx::interop::VideoPixelFormat::BayerBGGR8:
-        case score::gfx::interop::VideoPixelFormat::BayerBGGR10:
-        case score::gfx::interop::VideoPixelFormat::BayerBGGR16:
+        case Video::VideoPixelFormat::BayerBGGR8:
+        case Video::VideoPixelFormat::BayerBGGR10:
+        case Video::VideoPixelFormat::BayerBGGR16:
           return P::BGGR;
-        case score::gfx::interop::VideoPixelFormat::BayerGRBG8:
-        case score::gfx::interop::VideoPixelFormat::BayerGRBG10:
+        case Video::VideoPixelFormat::BayerGRBG8:
+        case Video::VideoPixelFormat::BayerGRBG10:
           return P::GRBG;
-        case score::gfx::interop::VideoPixelFormat::BayerGBRG8:
-        case score::gfx::interop::VideoPixelFormat::BayerGBRG10:
+        case Video::VideoPixelFormat::BayerGBRG8:
+        case Video::VideoPixelFormat::BayerGBRG10:
           return P::GBRG;
         default:
           return std::nullopt;
@@ -228,12 +228,12 @@ V4L2InputBackend::makeDecoder(Video::VideoMetadata& meta)
       // The ten- and twelve-bit orders ride right-aligned in a 16-bit lane and
       // carry the same rescale the 2D decoder applies.
       const double scale
-          = (neutral == score::gfx::interop::VideoPixelFormat::BayerRGGB10
-             || neutral == score::gfx::interop::VideoPixelFormat::BayerBGGR10
-             || neutral == score::gfx::interop::VideoPixelFormat::BayerGRBG10
-             || neutral == score::gfx::interop::VideoPixelFormat::BayerGBRG10)
+          = (neutral == Video::VideoPixelFormat::BayerRGGB10
+             || neutral == Video::VideoPixelFormat::BayerBGGR10
+             || neutral == Video::VideoPixelFormat::BayerGRBG10
+             || neutral == Video::VideoPixelFormat::BayerGBRG10)
                 ? 64.0625
-                : (neutral == score::gfx::interop::VideoPixelFormat::BayerRG12
+                : (neutral == Video::VideoPixelFormat::BayerRG12
                        ? 16.0039
                        : 1.0);
       qDebug() << "V4L2: external-image Bayer demosaic engaged";
