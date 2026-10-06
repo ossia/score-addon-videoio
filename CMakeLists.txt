@@ -74,6 +74,9 @@ if(VIDEOIO_ENABLE_AJA AND EXISTS "${VIDEOIO_AJA_SDK_ROOT}/ajantv2/includes/ntv2c
     set(AJANTV2_DISABLE_TOOLS       ON  CACHE BOOL "" FORCE)
     set(AJANTV2_DISABLE_PLUGIN_LOAD ON  CACHE BOOL "" FORCE)
     set(AJANTV2_DISABLE_TESTS       ON  CACHE BOOL "" FORCE)
+    if(COMMAND score_register_license)
+      score_register_license("AJA NTV2 SDK" URL "https://github.com/aja-video/libajantv2" FILES "${VIDEOIO_AJA_SDK_ROOT}/LICENSE")
+    endif()
     # The SDK is not unity-safe: ntv2anc.cpp and ntv2aux.cpp each define
     # kNumDIDRegisters and extractorInitParamsTable at file scope, and
     # extractorInitParamsTable is a different struct type in each, so merging
