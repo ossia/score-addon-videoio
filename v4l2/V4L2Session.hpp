@@ -103,6 +103,12 @@ struct Format
   std::uint32_t planeCount{1};
   bool multiplanar{};
 
+  /// V4L2_COLORSPACE_*, V4L2_YCBCR_ENC_*, V4L2_QUANTIZATION_*, V4L2_XFER_FUNC_*
+  std::uint32_t colorspace{};
+  std::uint32_t ycbcrEnc{};
+  std::uint32_t quantization{};
+  std::uint32_t xferFunc{};
+
   /// Per-plane stride/size for the multi-planar API; index 0 mirrors the
   /// single-planar fields above.
   std::uint32_t planeStride[4]{};

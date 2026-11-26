@@ -460,6 +460,10 @@ bool Session::configure(
     }
     out.bytesPerLine = out.planeStride[0];
     out.sizeImage = out.planeSize[0];
+    out.colorspace = f.fmt.pix_mp.colorspace;
+    out.ycbcrEnc = f.fmt.pix_mp.ycbcr_enc;
+    out.quantization = f.fmt.pix_mp.quantization;
+    out.xferFunc = f.fmt.pix_mp.xfer_func;
   }
   else
   {
@@ -471,6 +475,10 @@ bool Session::configure(
     out.sizeImage = f.fmt.pix.sizeimage;
     out.planeStride[0] = out.bytesPerLine;
     out.planeSize[0] = out.sizeImage;
+    out.colorspace = f.fmt.pix.colorspace;
+    out.ycbcrEnc = f.fmt.pix.ycbcr_enc;
+    out.quantization = f.fmt.pix.quantization;
+    out.xferFunc = f.fmt.pix.xfer_func;
   }
   d->fmt = out;
   return true;

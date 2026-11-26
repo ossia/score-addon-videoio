@@ -139,6 +139,7 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND VIDEOIO_HDRS
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2Session.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2Colorimetry.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2CpuCapture.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2InputBackend.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/v4l2/V4L2CaptureNode.hpp"
@@ -641,6 +642,15 @@ if(SCORE_VIDEOIO_BUILD_TESTS AND VIDEOIO_HAS_MAGEWELL)
   if(SCORE_STATIC_PLUGINS)
     target_link_libraries(MagewellCaptureTest PRIVATE ${SCORE_PLUGINS_LIST})
   endif()
+endif()
+
+if(SCORE_TESTING AND VIDEOIO_HAS_V4L2 AND TARGET avutil AND COMMAND score_add_test)
+  score_add_test(test_videoio_v4l2_colorimetry
+    STANDALONE
+    SOURCES tests/V4L2ColorimetryTest.cpp)
+  target_include_directories(test_videoio_v4l2_colorimetry PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(test_videoio_v4l2_colorimetry PRIVATE avutil)
 endif()
 
 # --- V4L2 capture validation (Linux) ------------------------------------------
