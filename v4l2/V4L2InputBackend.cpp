@@ -1,5 +1,6 @@
 #include "V4L2InputBackend.hpp"
 
+#include <v4l2/V4L2Colorimetry.hpp>
 #include <v4l2/V4L2CpuCapture.hpp>
 #include <v4l2/V4L2SyncRig.hpp>
 
@@ -13,6 +14,10 @@
 #include <Gfx/Graph/interop/VideoPixelFormatAV.hpp>
 
 #include <linux/videodev2.h>
+
+extern "C" {
+#include <libavutil/pixdesc.h>
+}
 
 #include <QDebug>
 
@@ -178,10 +183,25 @@ Video::ImageFormat V4L2InputBackend::imageFormat() const
   f.height = m_height;
   f.pixel_format
       = score::gfx::interop::toAVPixelFormat(neutralFromV4L2Fourcc(m_fourcc, m_session.driver()));
-  f.color_space = AVCOL_SPC_BT709;
-  f.color_primaries = AVCOL_PRI_BT709;
-  f.color_trc = AVCOL_TRC_BT709;
-  f.color_range = AVCOL_RANGE_MPEG;
+
+  const auto& fmt = m_session.format();
+  if(fmt.colorspace == V4L2_COLORSPACE_DEFAULT)
+  {
+    f.color_space = AVCOL_SPC_BT709;
+    f.color_primaries = AVCOL_PRI_BT709;
+    f.color_trc = AVCOL_TRC_BT709;
+    f.color_range = AVCOL_RANGE_MPEG;
+    return f;
+  }
+
+  const auto* desc = av_pix_fmt_desc_get(AVPixelFormat(f.pixel_format));
+  const bool isRgb = desc && (desc->flags & AV_PIX_FMT_FLAG_RGB);
+  const auto c = colorimetryFromV4L2(
+      fmt.colorspace, fmt.ycbcrEnc, fmt.quantization, fmt.xferFunc, isRgb);
+  f.color_space = c.space;
+  f.color_primaries = c.primaries;
+  f.color_trc = c.trc;
+  f.color_range = c.range;
   return f;
 }
 

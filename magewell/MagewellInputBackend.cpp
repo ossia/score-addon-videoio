@@ -304,10 +304,12 @@ void MagewellInputBackend::runLoop()
     // Capture the newest fully-buffered frame straight into the slot in the
     // selected FOURCC, driving the card's on-card CSC + deinterlace so no CPU
     // swizzle is needed: RGB targets get RGB output, YUV targets BT.709.
+    const bool rgb
+        = m_settings.fourcc == MWFOURCC_BGRA || m_settings.fourcc == MWFOURCC_RGBA;
     const MWCAP_VIDEO_COLOR_FORMAT csc
-        = (m_settings.fourcc == MWFOURCC_BGRA || m_settings.fourcc == MWFOURCC_RGBA)
-              ? MWCAP_VIDEO_COLOR_FORMAT_RGB
-              : MWCAP_VIDEO_COLOR_FORMAT_YUV709;
+        = rgb ? MWCAP_VIDEO_COLOR_FORMAT_RGB : MWCAP_VIDEO_COLOR_FORMAT_YUV709;
+    const MWCAP_VIDEO_QUANTIZATION_RANGE quant
+        = rgb ? MWCAP_VIDEO_QUANTIZATION_FULL : MWCAP_VIDEO_QUANTIZATION_LIMITED;
     if(MWCaptureVideoFrameToVirtualAddressEx(
            m_channel, binfo.iNewestBufferedFullFrame, dst, m_frameByteSize,
            m_stride, /*bBottomUp*/ 0, (MWCAP_PTR64)0, m_settings.fourcc, m_width, m_height,
@@ -320,7 +322,7 @@ void MagewellInputBackend::runLoop()
            MWCAP_VIDEO_DEINTERLACE_WEAVE, MWCAP_VIDEO_ASPECT_RATIO_IGNORE,
            /*pRectSrc*/ nullptr, /*pRectDest*/ nullptr,
            /*nAspectX*/ 0, /*nAspectY*/ 0, csc,
-           MWCAP_VIDEO_QUANTIZATION_UNKNOWN, MWCAP_VIDEO_SATURATION_UNKNOWN)
+           quant, MWCAP_VIDEO_SATURATION_UNKNOWN)
        != MW_SUCCEEDED)
       continue;
 
